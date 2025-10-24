@@ -106,10 +106,15 @@ jobs:
 
       - name: Push to Google Artifact Registry
         run: |
-          for image in /tmp/sentry-mirror-*; do
-            docker load --input $image
+          for PLATFORM in amd64 arm64; do
+            docker load --input /tmp/sentry-mirror-$PLATFORM.tar
+            docker tag $PLATFORM $REGISTRY:${{ github.sha }}-$PLATFORM
+            docker push $REGISTRY:${{ github.sha }}-$PLATFORM
           done
 
-          for image in /tmp/sentry-mirror-*; do
-            docker push $REGISTRY/image:${image##*/}
+          for TAG in ${{ github.sha }} latest; do
+            docker manifest create $REGISTRY:$TAG \
+              --amend $REGISTRY:${{ github.sha }}-amd64 \
+              --amend $REGISTRY:${{ github.sha }}-arm64
+            docker manifest push $REGISTRY:$TAG
           done
