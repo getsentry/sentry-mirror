@@ -75,11 +75,11 @@ impl FromStr for Dsn {
             None => return Err(DsnParseError::MissingHost),
         };
         let path = url.path().to_string();
-        let path_segments = match url.path_segments() {
+        let mut path_segments = match url.path_segments() {
             Some(s) => s,
             None => return Err(DsnParseError::MissingPath),
         };
-        let project_id = match path_segments.last() {
+        let project_id = match path_segments.next_back() {
             Some(p) => p.to_string(),
             None => return Err(DsnParseError::MissingProjectId),
         };
@@ -158,10 +158,7 @@ pub fn from_request(uri: &Uri, headers: &HeaderMap) -> Option<String> {
 
     if !key_source.is_empty() {
         let pattern = Regex::new(r"sentry_key=([a-f0-9]{32})").unwrap();
-        let capture = match pattern.captures(&key_source) {
-            Some(v) => v,
-            None => return None,
-        };
+        let capture = pattern.captures(&key_source)?;
 
         return Some(capture[1].to_string());
     }
