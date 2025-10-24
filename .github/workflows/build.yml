@@ -59,7 +59,7 @@ jobs:
       - name: Test Image
         run: |
           docker load --input /tmp/sentry-mirror-${{ matrix.platform }}.tar
-          docker run --rm ${{ matrix.platform }} --help | grep -q '^Usage: entrypoint'
+          docker run --rm ${{ matrix.platform }} --help | grep -q '^Usage: sentry-mirror'
 
       - name: Upload Image
         uses: actions/upload-artifact@v4
