@@ -26,13 +26,7 @@ pub async fn handle_request(
     let path = uri.path();
     let headers = req.headers().clone();
     let user_agent = match headers.get("user-agent") {
-        Some(header) => {
-            if let Ok(v) = header.to_str() {
-                v
-            } else {
-                "no-agent"
-            }
-        }
+        Some(header) => header.to_str().unwrap_or("no-agent"),
         None => "no-agent",
     };
     info!("{method} {path} {user_agent}");

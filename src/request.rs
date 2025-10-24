@@ -131,7 +131,7 @@ fn replace_public_key(target: &str, outbound: &dsn::Dsn) -> String {
 #[derive(Debug)]
 pub enum BodyError {
     UnsupportedCodec,
-    CouldNotDecode(std::io::Error),
+    CouldNotDecode(#[allow(dead_code)] std::io::Error),
     InvalidHeader,
 }
 
