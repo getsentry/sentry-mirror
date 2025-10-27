@@ -1,5 +1,5 @@
 # Build image
-FROM rust:1.77-bullseye as build
+FROM rust:1.90-bullseye as build
 
 COPY ./ /opt/src
 
