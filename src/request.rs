@@ -168,8 +168,8 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
 #[cfg(test)]
 mod tests {
     use flate2::{
-        read::{DeflateEncoder, GzEncoder},
         Compression,
+        read::{DeflateEncoder, GzEncoder},
     };
 
     use super::*;
