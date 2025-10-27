@@ -2,10 +2,10 @@ use std::path::Path;
 use std::sync::Arc;
 
 use clap::Parser;
+use hyper::Request;
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper::Request;
 use hyper_util::rt::TokioIo;
 use log::info;
 use tokio::net::TcpListener;

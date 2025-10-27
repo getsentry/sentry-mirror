@@ -98,11 +98,11 @@ pub fn replace_envelope_dsn(body: &Bytes, outbound: &dsn::Dsn) -> Option<Bytes> 
         json_header["dsn"] = Value::String(outbound.to_string());
         modified = true;
     }
-    if let Some(trace) = json_header.get("trace") {
-        if trace.get("public_key").is_some() {
-            json_header["trace"]["public_key"] = Value::String(outbound.public_key.clone());
-            modified = true;
-        }
+    if let Some(trace) = json_header.get("trace")
+        && trace.get("public_key").is_some()
+    {
+        json_header["trace"]["public_key"] = Value::String(outbound.public_key.clone());
+        modified = true;
     }
     if !modified {
         return None;
@@ -168,8 +168,8 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
 #[cfg(test)]
 mod tests {
     use flate2::{
-        read::{DeflateEncoder, GzEncoder},
         Compression,
+        read::{DeflateEncoder, GzEncoder},
     };
 
     use super::*;
