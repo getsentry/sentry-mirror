@@ -3,9 +3,6 @@ FROM rust:1.90-bookworm AS build
 
 COPY ./ /opt/src
 
-# Generate an updated VERSION file using git metadata
-# RUN /opt/src/scripts/bump-version
-
 RUN cd /opt/src \
   && cargo build --release
 
