@@ -12,6 +12,8 @@ use tokio::net::TcpListener;
 
 mod config;
 mod dsn;
+mod logging;
+mod metrics;
 mod request;
 mod service;
 
@@ -50,16 +52,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     };
 
-    let port = configdata
-        .port
-        .expect("Missing required configuration `port`");
-    let ip = configdata
-        .ip
-        .or_else(|| Some("127.0.0.1".to_string()))
-        .unwrap();
+    // Initialize metrics and logging
+    metrics::init(metrics::MetricsConfig::from_config(&configdata));
+    logging::init(logging::LoggingConfig::from_config(&configdata));
 
-    let addr = format!("{ip}:{port}");
-    info!("Listening on {0}", addr);
+    let addr = configdata.bind_addr();
+    info!("Listening on {addr}");
     let listener = TcpListener::bind(addr).await?;
 
     // Create keymap that we need to match incoming requests
