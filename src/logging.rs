@@ -44,8 +44,7 @@ impl LoggingConfig {
             config
                 .log_filter
                 .clone()
-                .or(Some("info".into()))
-                .unwrap()
+                .unwrap_or("info".into())
                 .clone()
         };
 
@@ -53,8 +52,8 @@ impl LoggingConfig {
             sentry_dsn: config.sentry_dsn.clone(),
             sentry_env: config.sentry_env.clone(),
             traces_sample_rate: config.traces_sample_rate.unwrap_or(0.0),
-            log_filter: log_filter,
-            log_format: config.log_format.or(Some(LogFormat::Text)).unwrap(),
+            log_filter,
+            log_format: config.log_format.unwrap_or(LogFormat::Text),
         }
     }
 }

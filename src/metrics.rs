@@ -29,12 +29,11 @@ impl MetricsConfig {
         };
 
         MetricsConfig {
-            statsd_addr: statsd_addr,
+            statsd_addr,
             default_tags: config
                 .default_metrics_tags
                 .clone()
-                .or(Some(BTreeMap::new()))
-                .unwrap(),
+                .unwrap_or(BTreeMap::new()),
         }
     }
 }
