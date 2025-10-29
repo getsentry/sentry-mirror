@@ -29,10 +29,10 @@ pub struct ConfigData {
 
     /// The log filter to apply application logging to.
     /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
-    pub log_filter: String,
+    pub log_filter: Option<String>,
 
     /// The log format to use
-    pub log_format: LogFormat,
+    pub log_format: Option<LogFormat>,
 
     /// The statsd address to report metrics to.
     pub statsd_addr: Option<String>,
@@ -66,18 +66,15 @@ impl ConfigData {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct ConfigError;
-
 /// Load configuration data from a path and parse it into `ConfigData`
-pub fn load_config(path: &Path) -> Result<ConfigData, ConfigError> {
+pub fn load_config(path: &Path) -> Result<ConfigData, String> {
     let f = match fs::File::open(path) {
         Ok(f) => f,
-        Err(_) => return Err(ConfigError),
+        Err(_) => return Err(format!("{}", path.display())),
     };
     let configdata = match serde_yaml::from_reader(io::BufReader::new(f)) {
         Ok(data) => data,
-        Err(_) => return Err(ConfigError),
+        Err(err) => return Err(format!("{}", err)),
     };
     Ok(configdata)
 }

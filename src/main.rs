@@ -33,14 +33,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read command line options
     let args = Args::parse();
     let config_path = Path::new(&args.config);
-    info!("Using configuration file {0}", args.config);
+    info!("sentry-mirror starting");
+    info!("version: {0}", config::get_version());
+    info!("configuration file: {0}", args.config);
 
     // Parse the configuration file
     let configdata = match config::load_config(config_path) {
         Ok(keys) => keys,
-        Err(_) => {
-            println!("Invalid configuration file");
-            panic!("Could not parse configuration file");
+        Err(err) => {
+            panic!("Could not parse configuration file: {err:?}");
         }
     };
 

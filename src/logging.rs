@@ -41,7 +41,7 @@ impl LoggingConfig {
         let log_filter = if verbose_mode {
                 "debug".into()
             } else {
-                config.log_filter.clone()
+                config.log_filter.clone().or(Some("warning".into())).unwrap().clone()
             };
 
         LoggingConfig {
@@ -49,7 +49,7 @@ impl LoggingConfig {
             sentry_env: config.sentry_env.clone(),
             traces_sample_rate: config.traces_sample_rate.unwrap_or(0.0),
             log_filter: log_filter,
-            log_format: config.log_format,
+            log_format: config.log_format.or(Some(LogFormat::Text)).unwrap(),
         }
     }
 }
