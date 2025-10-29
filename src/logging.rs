@@ -39,10 +39,15 @@ pub struct LoggingConfig {
 impl LoggingConfig {
     pub fn from_config(config: &ConfigData, verbose_mode: bool) -> Self {
         let log_filter = if verbose_mode {
-                "debug".into()
-            } else {
-                config.log_filter.clone().or(Some("info".into())).unwrap().clone()
-            };
+            "debug".into()
+        } else {
+            config
+                .log_filter
+                .clone()
+                .or(Some("info".into()))
+                .unwrap()
+                .clone()
+        };
 
         LoggingConfig {
             sentry_dsn: config.sentry_dsn.clone(),
@@ -55,7 +60,7 @@ impl LoggingConfig {
 }
 
 /// Setup sentry-sdk and logging/tracing
-/// If `verbose_mode` is enabled, 
+/// If `verbose_mode` is enabled,
 pub fn init(log_config: LoggingConfig) {
     if let Some(dsn) = &log_config.sentry_dsn {
         let dsn = Some(Dsn::from_str(dsn).expect("Invalid Sentry DSN"));

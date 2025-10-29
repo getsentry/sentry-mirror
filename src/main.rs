@@ -7,8 +7,8 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use tracing::info;
 use tokio::net::TcpListener;
+use tracing::info;
 
 mod config;
 mod dsn;
@@ -47,7 +47,10 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Initialize metrics and logging
     metrics::init(metrics::MetricsConfig::from_config(&configdata));
-    logging::init(logging::LoggingConfig::from_config(&configdata, args.verbose));
+    logging::init(logging::LoggingConfig::from_config(
+        &configdata,
+        args.verbose,
+    ));
 
     let addr = configdata.bind_addr();
     info!("Listening on {addr}");
