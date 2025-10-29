@@ -12,6 +12,7 @@ use crate::logging::LogFormat;
 pub struct KeyRing {
     /// Inbound keys are virtual DSNs that the mirror will accept traffic on
     pub inbound: Option<String>,
+
     /// One or more upstream DSN keys that the mirror will forward traffic to.
     pub outbound: Vec<Option<String>>,
 }
@@ -38,13 +39,13 @@ pub struct ConfigData {
     pub statsd_addr: Option<String>,
 
     /// Default tags to add to all metrics.
-    pub default_metrics_tags: BTreeMap<String, String>,
+    pub default_metrics_tags: Option<BTreeMap<String, String>>,
 
     /// The inbound IP to use. Defaults to 127.0.0.1
-    pub ip: Option<String>,
+    pub ip: String,
 
     /// The port the http server will listen on
-    pub port: Option<u16>,
+    pub port: u16,
 
     /// A list of keypairs that the server will handle.
     pub keys: Vec<KeyRing>,
@@ -53,14 +54,8 @@ pub struct ConfigData {
 impl ConfigData {
     /// Get the tcp address to bind an http server to
     pub fn bind_addr(&self) -> String {
-        let port = self
-            .port
-            .expect("Missing required configuration `port`");
-        let ip = self
-            .ip
-            .clone()
-            .or(Some("127.0.0.1".to_string()))
-            .unwrap();
+        let port = self.port;
+        let ip = self.ip.clone();
 
         format!("{ip}:{port}")
     }

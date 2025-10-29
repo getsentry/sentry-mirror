@@ -33,9 +33,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read command line options
     let args = Args::parse();
     let config_path = Path::new(&args.config);
-    info!("sentry-mirror starting");
-    info!("version: {0}", config::get_version());
-    info!("configuration file: {0}", args.config);
+    println!("sentry-mirror starting");
+    println!("version: {0}", config::get_version());
+    println!("configuration file: {0}", args.config);
 
     // Parse the configuration file
     let configdata = match config::load_config(config_path) {
