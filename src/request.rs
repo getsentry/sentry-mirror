@@ -161,6 +161,7 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
 
         Ok(Bytes::from(decompressed))
     } else {
+        warn!(encoding_value, "Unsupported content-encoding header value");
         Err(BodyError::UnsupportedCodec)
     }
 }

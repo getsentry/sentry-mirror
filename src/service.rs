@@ -2,7 +2,7 @@ use futures::future::join_all;
 use hyper_util::client::legacy::{Client, ResponseFuture};
 use hyper_util::rt::TokioExecutor;
 use std::{collections::HashMap, sync::Arc};
-use tracing::{debug, info, warn};
+use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Bytes, Incoming};
@@ -29,11 +29,15 @@ pub async fn handle_request(
         Some(header) => header.to_str().unwrap_or("no-agent"),
         None => "no-agent",
     };
-    info!("{method} {path} {user_agent}");
+
+    debug!("{method} {path} {user_agent}");
+    metrics::counter!("handle_request.request").increment(1);
 
     // All store/envelope requests are POST
     if method != Method::POST {
+        metrics::counter!("handle_request.incorrect_method", "method" => method.to_string()).increment(1);
         debug!("Received a non POST request");
+
         let res = Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)
             .body(full("Method not allowed"))
@@ -44,6 +48,8 @@ pub async fn handle_request(
     let found_dsn = dsn::from_request(&uri, &headers);
     if found_dsn.is_none() {
         debug!("Could not find a DSN in the request headers or URI");
+        metrics::counter!("handle_request.no_dsn").increment(1);
+
         return Ok(bad_request_response());
     }
     // Match the public key with registered keys
@@ -53,6 +59,8 @@ pub async fn handle_request(
         // If a DSN cannot be found -> empty response
         None => {
             debug!("Could not find a match DSN in the configured keys");
+            metrics::counter!("handle_request.unknown_dsn").increment(1);
+
             return Ok(bad_request_response());
         }
     };
@@ -64,7 +72,9 @@ pub async fn handle_request(
         body_bytes = match request::decode_body(request_encoding, &body_bytes) {
             Ok(decompressed) => decompressed,
             Err(e) => {
+                metrics::counter!("handle_request.decode_error").increment(1);
                 warn!("Could not decode request body: {0:?}", e);
+
                 return Ok(bad_request_response());
             }
         }
@@ -74,7 +84,9 @@ pub async fn handle_request(
     // we use the body of the first response
     let mut responses = Vec::new();
     for outbound_dsn in keyring.outbound.iter() {
+        metrics::counter!("handle_request.outbound_request.start").increment(1);
         debug!("Creating outbound request for {0}", &outbound_dsn.host);
+
         let request_builder = request::make_outbound_request(&uri, &headers, outbound_dsn);
         let body_out = match request::replace_envelope_dsn(&body_bytes, outbound_dsn) {
             Some(new_body) => new_body,
@@ -99,11 +111,13 @@ pub async fn handle_request(
             continue;
         }
         if let Ok(response) = response_res {
+            metrics::counter!("handle_request.outbound_request.success").increment(1);
             if let Ok(response_body) = response.collect().await {
                 resp_body = response_body.to_bytes();
                 found_body = true;
             }
         } else {
+            metrics::counter!("handle_request.outbound_request.failed").increment(1);
             warn!("Could not make request: {0:?}", response_res.err());
         }
     }
@@ -117,6 +131,7 @@ pub async fn handle_request(
         )
         .header("Cross-Origin-Resource-Policy", "cross-origin");
 
+    metrics::counter!("handle_request.response").increment(1);
     Ok(response_builder.body(full(resp_body)).unwrap())
 }
 
