@@ -1,7 +1,7 @@
 use futures::future::join_all;
 use hyper_util::client::legacy::{Client, ResponseFuture};
 use hyper_util::rt::TokioExecutor;
-use log::{debug, info, warn};
+use tracing::{debug, info, warn};
 use std::{collections::HashMap, sync::Arc};
 
 use http_body_util::{BodyExt, Full};

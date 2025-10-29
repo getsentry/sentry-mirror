@@ -4,7 +4,7 @@ use hyper::header::HeaderValue;
 use hyper::http::request::Builder as RequestBuilder;
 use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Request, Uri};
-use log::warn;
+use tracing::warn;
 use regex::Regex;
 use serde_json::Value;
 use std::io::prelude::*;

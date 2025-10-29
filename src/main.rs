@@ -7,7 +7,7 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use log::info;
+use tracing::info;
 use tokio::net::TcpListener;
 
 mod config;
@@ -32,14 +32,6 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read command line options
     let args = Args::parse();
-
-    // Config logging
-    if args.verbose {
-        simple_logger::init_with_level(log::Level::Debug).unwrap();
-    } else {
-        simple_logger::init_with_level(log::Level::Info).unwrap();
-    }
-
     let config_path = Path::new(&args.config);
     info!("Using configuration file {0}", args.config);
 
