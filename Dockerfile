@@ -21,4 +21,4 @@ COPY --from=build /opt/src/VERSION /opt/VERSION
 
 WORKDIR /opt
 
-CMD ["/opt/sentry-mirror"]
+ENTRYPOINT ["/opt/sentry-mirror"]
