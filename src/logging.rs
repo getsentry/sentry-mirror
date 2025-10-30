@@ -41,11 +41,7 @@ impl LoggingConfig {
         let log_filter = if verbose_mode {
             "debug".into()
         } else {
-            config
-                .log_filter
-                .clone()
-                .unwrap_or("info".into())
-                .clone()
+            config.log_filter.clone().unwrap_or("info".into()).clone()
         };
 
         LoggingConfig {

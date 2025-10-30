@@ -35,7 +35,8 @@ pub async fn handle_request(
 
     // All store/envelope requests are POST
     if method != Method::POST {
-        metrics::counter!("handle_request.incorrect_method", "method" => method.to_string()).increment(1);
+        metrics::counter!("handle_request.incorrect_method", "method" => method.to_string())
+            .increment(1);
         debug!("Received a non POST request");
 
         let res = Response::builder()

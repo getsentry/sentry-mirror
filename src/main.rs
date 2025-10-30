@@ -8,7 +8,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use tracing::{info, error};
+use tracing::{error, info};
 
 mod config;
 mod dsn;
