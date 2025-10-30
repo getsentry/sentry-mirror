@@ -33,7 +33,7 @@ impl MetricsConfig {
             default_tags: config
                 .default_metrics_tags
                 .clone()
-                .unwrap_or(BTreeMap::new()),
+                .unwrap_or_default(),
         }
     }
 }
