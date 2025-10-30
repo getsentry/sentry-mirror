@@ -7,11 +7,13 @@ use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
-use log::info;
 use tokio::net::TcpListener;
+use tracing::{error, info};
 
 mod config;
 mod dsn;
+mod logging;
+mod metrics;
 mod request;
 mod service;
 
@@ -30,36 +32,28 @@ struct Args {
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     // Read command line options
     let args = Args::parse();
-
-    // Config logging
-    if args.verbose {
-        simple_logger::init_with_level(log::Level::Debug).unwrap();
-    } else {
-        simple_logger::init_with_level(log::Level::Info).unwrap();
-    }
-
     let config_path = Path::new(&args.config);
-    info!("Using configuration file {0}", args.config);
+    println!("sentry-mirror starting");
+    println!("version: {0}", config::get_version());
+    println!("configuration file: {0}", args.config);
 
     // Parse the configuration file
     let configdata = match config::load_config(config_path) {
         Ok(keys) => keys,
-        Err(_) => {
-            println!("Invalid configuration file");
-            panic!("Could not parse configuration file");
+        Err(err) => {
+            panic!("Could not parse configuration file: {err:?}");
         }
     };
 
-    let port = configdata
-        .port
-        .expect("Missing required configuration `port`");
-    let ip = configdata
-        .ip
-        .or_else(|| Some("127.0.0.1".to_string()))
-        .unwrap();
+    // Initialize metrics and logging
+    metrics::init(metrics::MetricsConfig::from_config(&configdata));
+    logging::init(logging::LoggingConfig::from_config(
+        &configdata,
+        args.verbose,
+    ));
 
-    let addr = format!("{ip}:{port}");
-    info!("Listening on {0}", addr);
+    let addr = configdata.bind_addr();
+    info!("Listening on {addr}");
     let listener = TcpListener::bind(addr).await?;
 
     // Create keymap that we need to match incoming requests
@@ -81,7 +75,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 )
                 .await
             {
-                eprintln!("Error serving connection: {:?}", err);
+                error!("Error serving connection: {:?}", err);
             }
         });
     }

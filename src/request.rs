@@ -4,10 +4,10 @@ use hyper::header::HeaderValue;
 use hyper::http::request::Builder as RequestBuilder;
 use hyper::http::uri::PathAndQuery;
 use hyper::{HeaderMap, Request, Uri};
-use log::warn;
 use regex::Regex;
 use serde_json::Value;
 use std::io::prelude::*;
+use tracing::warn;
 
 use crate::dsn;
 
@@ -161,6 +161,7 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
 
         Ok(Bytes::from(decompressed))
     } else {
+        warn!(encoding_value, "Unsupported content-encoding header value");
         Err(BodyError::UnsupportedCodec)
     }
 }
