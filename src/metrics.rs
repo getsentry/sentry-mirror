@@ -30,10 +30,7 @@ impl MetricsConfig {
 
         MetricsConfig {
             statsd_addr,
-            default_tags: config
-                .default_metrics_tags
-                .clone()
-                .unwrap_or_default(),
+            default_tags: config.default_metrics_tags.clone().unwrap_or_default(),
         }
     }
 }
