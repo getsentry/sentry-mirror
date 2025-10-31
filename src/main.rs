@@ -8,7 +8,7 @@ use hyper::server::conn::http1;
 use hyper::service::service_fn;
 use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{debug, error, info};
 
 mod config;
 mod dsn;
@@ -58,6 +58,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     // Create keymap that we need to match incoming requests
     let keymap = dsn::make_key_map(configdata.keys);
+    debug!("DSN configuration");
+    debug!("{}", dsn::format_key_map(&keymap));
     let arcmap = Arc::new(keymap);
 
     loop {

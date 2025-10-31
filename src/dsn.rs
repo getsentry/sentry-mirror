@@ -133,6 +133,18 @@ pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
     keymap
 }
 
+pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
+    let mut out = String::new();
+    for (_, keyring) in keymap.iter() {
+        out.push_str(format!("Inbound: {}\n", keyring.inbound).as_ref());
+        out.push_str("Outbound:\n");
+        for outbound in keyring.outbound.iter() {
+            out.push_str(format!("- {} \n", outbound).as_ref());
+        }
+    }
+    out
+}
+
 pub const SENTRY_X_AUTH_HEADER: &str = "X-Sentry-Auth";
 pub const AUTHORIZATION_HEADER: &str = "Authorization";
 pub const AUTH_HEADERS: [&str; 2] = [SENTRY_X_AUTH_HEADER, AUTHORIZATION_HEADER];
