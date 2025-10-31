@@ -30,9 +30,9 @@ where
     metrics::counter!("handle_request.request", "path" => path.clone()).increment(1);
 
     if method == Method::GET && path == "/health" {
-        return handle_health(req);
+        handle_health(req)
     } else {
-        return handle_proxy(req, keymap).await;
+        handle_proxy(req, keymap).await
     }
 }
 
