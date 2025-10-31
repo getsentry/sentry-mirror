@@ -20,8 +20,9 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 pub async fn handle_request<B: Body>(
     req: Request<B>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
-) -> HandlerResult<Response<BoxBody>> 
-    where B::Error: std::error::Error + Sync + Send + 'static
+) -> HandlerResult<Response<BoxBody>>
+where
+    B::Error: std::error::Error + Sync + Send + 'static,
 {
     let method = req.method();
     let path = req.uri().path().to_string();
@@ -45,8 +46,9 @@ pub fn handle_health(_req: Request<impl Body>) -> HandlerResult<Response<BoxBody
 pub async fn handle_proxy<B: Body>(
     req: Request<B>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
-) -> HandlerResult<Response<BoxBody>> 
-    where B::Error: std::error::Error + Sync + Send + 'static
+) -> HandlerResult<Response<BoxBody>>
+where
+    B::Error: std::error::Error + Sync + Send + 'static,
 {
     let method = req.method();
     let uri = req.uri().clone();
@@ -186,10 +188,10 @@ async fn send_request(req: Request<Full<Bytes>>) -> ResponseFuture {
 mod tests {
     use std::{collections::HashMap, sync::Arc};
 
-    use http_body_util::{combinators::BoxBody, BodyExt};
-    use hyper::{body::Bytes, Request, Response, StatusCode};
+    use super::{full, handle_request};
     use crate::dsn;
-    use super::{handle_request, full};
+    use http_body_util::{BodyExt, combinators::BoxBody};
+    use hyper::{Request, Response, StatusCode, body::Bytes};
 
     fn make_test_keymap() -> Arc<HashMap<String, dsn::DsnKeyRing>> {
         let keymap = HashMap::new();
@@ -197,12 +199,7 @@ mod tests {
     }
 
     async fn extract_body(response: Response<BoxBody<Bytes, hyper::Error>>) -> String {
-        let body_bytes = response
-            .into_body()
-            .collect()
-            .await
-            .unwrap()
-            .to_bytes();
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
 
         String::from_utf8(body_bytes.to_vec()).unwrap()
     }
@@ -210,7 +207,9 @@ mod tests {
     #[tokio::test]
     async fn test_handle_request_health() {
         let keymap = make_test_keymap();
-        let builder = Request::builder().method("GET").uri("http://example.com/health");
+        let builder = Request::builder()
+            .method("GET")
+            .uri("http://example.com/health");
         let request = builder.body(full("")).unwrap();
         let response_res = handle_request(request, keymap).await;
 
