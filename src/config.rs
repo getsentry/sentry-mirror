@@ -99,14 +99,15 @@ impl Provider for ConfigData {
 pub fn from_args(args: &Args) -> Result<ConfigData, Box<figment::Error>> {
     let config_path = &args.config;
     let mut config: ConfigData = Figment::from(ConfigData::default())
-        .merge(Env::prefixed("SENTRY_MIRROR_"))
         .merge(Yaml::file(config_path))
+        .merge(Env::prefixed("SENTRY_MIRROR_"))
         .extract()?;
 
     if args.verbose {
         config.verbose = true;
         config.log_filter = Some("debug".into());
     }
+    dbg!(&config);
 
     Ok(config)
 }
