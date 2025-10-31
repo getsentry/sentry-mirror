@@ -30,6 +30,7 @@ where
     let path = req.uri().path().to_string();
 
     metrics::counter!("handle_request.request", "path" => path.clone()).increment(1);
+    dbg!(&path);
 
     if method == Method::GET && path == "/health" {
         handle_health(req)
@@ -68,14 +69,15 @@ where
                 acc.push_str(item.as_ref());
                 acc
             });
-        debug!("{method} {path}\nHeaders:\n{}", formatted_headers.unwrap_or("No headers".into()));
+        debug!("Request: {method} {path}");
+        debug!("Headers:\n{}", formatted_headers.unwrap_or("Invalid headers".into()));
     }
 
     // All store/envelope requests are POST
     if method != Method::POST {
         metrics::counter!("handle_proxy.incorrect_method", "method" => method.to_string())
             .increment(1);
-        debug!("Received a non POST request");
+        debug!("Received a non POST request. method={}", method);
 
         let res = Response::builder()
             .status(StatusCode::METHOD_NOT_ALLOWED)
@@ -103,7 +105,12 @@ where
             return Ok(bad_request_response());
         }
     };
+
     let mut body_bytes = req.collect().await?.to_bytes();
+    if config.verbose {
+        let body_str = str::from_utf8(&body_bytes).unwrap_or("<binary data>".into());
+        debug!("Request Body: {}", body_str);
+    }
 
     // Bodies can be compressed
     if headers.contains_key("content-encoding") {
@@ -151,6 +158,13 @@ where
         }
         if let Ok(response) = response_res {
             metrics::counter!("handle_proxy.outbound_request.success").increment(1);
+
+            if config.verbose {
+                let response_headers = response.headers();
+                if let Some(host) = response_headers.get("Host") {
+                    debug!("Received response from {}", host.to_str().unwrap_or("<invalid host>"));
+                }
+            }
             if let Ok(response_body) = response.collect().await {
                 resp_body = response_body.to_bytes();
                 found_body = true;
