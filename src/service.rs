@@ -68,7 +68,7 @@ where
                 acc.push_str(item.as_ref());
                 acc
             });
-        debug!("{method} {path}\nHeaders:{}", formatted_headers.unwrap_or("No headers".into()));
+        debug!("{method} {path}\nHeaders:\n{}", formatted_headers.unwrap_or("No headers".into()));
     }
 
     // All store/envelope requests are POST
