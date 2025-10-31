@@ -133,6 +133,18 @@ pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
     keymap
 }
 
+pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
+    let mut out = String::new();
+    for (_, keyring) in keymap.iter() {
+        out.push_str(format!("Inbound: {}\n", keyring.inbound).as_ref());
+        out.push_str("Outbound:\n");
+        for outbound in keyring.outbound.iter() {
+            out.push_str(format!("- {}\n", outbound).as_ref());
+        }
+    }
+    out
+}
+
 pub const SENTRY_X_AUTH_HEADER: &str = "X-Sentry-Auth";
 pub const AUTHORIZATION_HEADER: &str = "Authorization";
 pub const AUTH_HEADERS: [&str; 2] = [SENTRY_X_AUTH_HEADER, AUTHORIZATION_HEADER];
@@ -301,5 +313,23 @@ mod tests {
 
         let res = from_request(&uri, &headers);
         assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_format_key_map() {
+        let keys = vec![KeyRing {
+            inbound: Some("https://abcdef@sentry.io/1234".to_string()),
+            outbound: vec![
+                Some("https://ghijkl@sentry.io/567".to_string()),
+                Some("https://mnopq@sentry.io/890".to_string()),
+            ],
+        }];
+        let key_map = make_key_map(keys);
+        let output = format_key_map(&key_map);
+        dbg!(&output);
+        assert!(output.contains("Inbound: https://abcdef@sentry.io/1234"));
+        assert!(output.contains("Outbound:\n"));
+        assert!(output.contains("- https://ghijkl@sentry.io/567\n"));
+        assert!(output.contains("- https://mnopq@sentry.io/890\n"));
     }
 }
