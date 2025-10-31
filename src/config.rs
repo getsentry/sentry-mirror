@@ -34,10 +34,10 @@ pub struct ConfigData {
 
     /// The log filter to apply application logging to.
     /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
-    pub log_filter: Option<String>,
+    pub log_filter: String,
 
     /// The log format to use
-    pub log_format: Option<LogFormat>,
+    pub log_format: LogFormat,
 
     /// The statsd address to report metrics to.
     pub statsd_addr: Option<String>,
@@ -75,8 +75,8 @@ impl Default for ConfigData {
             sentry_dsn: None,
             sentry_env: None,
             traces_sample_rate: None,
-            log_filter: None,
-            log_format: None,
+            log_filter: "info".into(),
+            log_format: LogFormat::Text,
             statsd_addr: None,
             default_metrics_tags: None,
             ip: "127.0.0.1".into(),
@@ -106,7 +106,7 @@ pub fn from_args(args: &Args) -> Result<ConfigData, Box<figment::Error>> {
 
     if args.verbose {
         config.verbose = true;
-        config.log_filter = Some("debug".into());
+        config.log_filter = "debug".into();
     }
 
     Ok(config)
