@@ -189,12 +189,40 @@ mod tests {
     use std::{collections::HashMap, sync::Arc};
 
     use super::{full, handle_request};
-    use crate::dsn;
+    use crate::{
+        config::KeyRing,
+        dsn::{DsnKeyRing, make_key_map},
+    };
     use http_body_util::{BodyExt, combinators::BoxBody};
     use hyper::{Request, Response, StatusCode, body::Bytes};
 
-    fn make_test_keymap() -> Arc<HashMap<String, dsn::DsnKeyRing>> {
-        let keymap = HashMap::new();
+    fn make_test_keymap() -> Arc<HashMap<String, DsnKeyRing>> {
+        let keydata = vec![
+            KeyRing {
+                inbound: Some(
+                    "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
+                ),
+                outbound: vec![
+                    Some(
+                        "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
+                            .to_string(),
+                    ),
+                    Some(
+                        "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
+                            .to_string(),
+                    ),
+                ],
+            },
+            KeyRing {
+                inbound: Some(
+                    "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
+                ),
+                outbound: vec![Some(
+                    "https://bbbbbb12345678901234567890123456@target.example.com/7890".to_string(),
+                )],
+            },
+        ];
+        let keymap = make_key_map(keydata);
         Arc::new(keymap)
     }
 
@@ -216,7 +244,61 @@ mod tests {
         assert!(response_res.is_ok());
         let response = response_res.unwrap();
         assert_eq!(StatusCode::OK, response.status());
-        let body_str = extract_body(response).await;
-        assert_eq!("ok", body_str);
+        let body = extract_body(response).await;
+        assert_eq!("ok", body);
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_proxy_incorrect_method() {
+        let keymap = make_test_keymap();
+        let builder = Request::builder()
+            .method("GET")
+            .uri("http://localhost:3000/store");
+        let request = builder.body(full("")).unwrap();
+        let response_res = handle_request(request, keymap).await;
+
+        assert!(response_res.is_ok());
+        let response = response_res.unwrap();
+
+        assert_eq!(StatusCode::METHOD_NOT_ALLOWED, response.status());
+        let body = extract_body(response).await;
+        assert_eq!("Method not allowed", body);
+    }
+
+    #[tokio::test]
+    async fn test_handle_proxy_no_dsn() {
+        let keymap = make_test_keymap();
+        let builder = Request::builder()
+            .method("POST")
+            .uri("http://localhost:3000/store");
+
+        let request = builder.body(full("")).unwrap();
+        let response_res = handle_request(request, keymap).await;
+
+        assert!(response_res.is_ok());
+        let response = response_res.unwrap();
+
+        assert_eq!(StatusCode::BAD_REQUEST, response.status());
+        let body = extract_body(response).await;
+        assert_eq!("No DSN found", body);
+    }
+
+    #[tokio::test]
+    async fn test_handle_proxy_incorrect_dsn() {
+        let keymap = make_test_keymap();
+        let builder = Request::builder()
+            .method("POST")
+            .header("Authorization", "sentry_key=not-there")
+            .uri("http://localhost:3000/store");
+
+        let request = builder.body(full("")).unwrap();
+        let response_res = handle_request(request, keymap).await;
+
+        assert!(response_res.is_ok());
+        let response = response_res.unwrap();
+
+        assert_eq!(StatusCode::BAD_REQUEST, response.status());
+        let body = extract_body(response).await;
+        assert_eq!("No DSN found", body);
     }
 }
