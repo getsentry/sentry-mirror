@@ -66,9 +66,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     io,
                     service_fn(move |req: Request<Incoming>| {
                         let config_loop = configdata_loop.clone();
-                        service::handle_request(
-                            req, config_loop.clone(), keymap_loop.clone()
-                        )
+                        service::handle_request(req, config_loop.clone(), keymap_loop.clone())
                     }),
                 )
                 .await

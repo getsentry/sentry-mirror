@@ -30,7 +30,6 @@ where
     let path = req.uri().path().to_string();
 
     metrics::counter!("handle_request.request", "path" => path.clone()).increment(1);
-    dbg!(&path);
 
     if method == Method::GET && path == "/health" {
         handle_health(req)
@@ -60,7 +59,8 @@ where
     let headers = req.headers().clone();
 
     if config.verbose {
-        let formatted_headers = headers.iter()
+        let formatted_headers = headers
+            .iter()
             .map(|(key, value)| {
                 let value = value.to_str().unwrap_or("<invalid>");
                 format!(" {key}: {value}\n")
@@ -70,7 +70,10 @@ where
                 acc
             });
         debug!("Request: {method} {path}");
-        debug!("Headers:\n{}", formatted_headers.unwrap_or("Invalid headers".into()));
+        debug!(
+            "Headers:\n{}",
+            formatted_headers.unwrap_or("Invalid headers".into())
+        );
     }
 
     // All store/envelope requests are POST
@@ -108,7 +111,7 @@ where
 
     let mut body_bytes = req.collect().await?.to_bytes();
     if config.verbose {
-        let body_str = str::from_utf8(&body_bytes).unwrap_or("<binary data>".into());
+        let body_str = str::from_utf8(&body_bytes).unwrap_or("<binary data>");
         debug!("Request Body: {}", body_str);
     }
 
@@ -162,7 +165,10 @@ where
             if config.verbose {
                 let response_headers = response.headers();
                 if let Some(host) = response_headers.get("Host") {
-                    debug!("Received response from {}", host.to_str().unwrap_or("<invalid host>"));
+                    debug!(
+                        "Received response from {}",
+                        host.to_str().unwrap_or("<invalid host>")
+                    );
                 }
             }
             if let Ok(response_body) = response.collect().await {
@@ -216,7 +222,8 @@ mod tests {
     use super::{full, handle_request};
     use crate::{
         config::{ConfigData, KeyRing},
-        dsn::{make_key_map, DsnKeyRing}, logging::LogFormat,
+        dsn::{DsnKeyRing, make_key_map},
+        logging::LogFormat,
     };
     use http_body_util::{BodyExt, combinators::BoxBody};
     use hyper::{Request, Response, StatusCode, body::Bytes};
@@ -259,7 +266,8 @@ mod tests {
                         "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
                     ),
                     outbound: vec![Some(
-                        "https://bbbbbb12345678901234567890123456@target.example.com/7890".to_string(),
+                        "https://bbbbbb12345678901234567890123456@target.example.com/7890"
+                            .to_string(),
                     )],
                 },
             ],

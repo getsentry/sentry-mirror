@@ -1,6 +1,7 @@
 use crate::Args;
 use figment::{
-    providers::{Env, Format, Yaml}, Figment, Metadata, Profile, Provider
+    Figment, Metadata, Profile, Provider,
+    providers::{Env, Format, Yaml},
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -107,7 +108,6 @@ pub fn from_args(args: &Args) -> Result<ConfigData, Box<figment::Error>> {
         config.verbose = true;
         config.log_filter = Some("debug".into());
     }
-    dbg!(&config);
 
     Ok(config)
 }
