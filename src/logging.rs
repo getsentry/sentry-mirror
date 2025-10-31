@@ -37,8 +37,8 @@ pub struct LoggingConfig {
 }
 
 impl LoggingConfig {
-    pub fn from_config(config: &ConfigData, verbose_mode: bool) -> Self {
-        let log_filter = if verbose_mode {
+    pub fn from_config(config: &ConfigData) -> Self {
+        let log_filter = if config.verbose {
             "debug".into()
         } else {
             config.log_filter.clone().unwrap_or("info".into()).clone()

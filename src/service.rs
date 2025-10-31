@@ -10,6 +10,7 @@ use hyper::{Method, StatusCode};
 use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
 
+use crate::config::ConfigData;
 use crate::dsn;
 use crate::request;
 
@@ -19,6 +20,7 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
 pub async fn handle_request<B: Body>(
     req: Request<B>,
+    config: Arc<ConfigData>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
 ) -> HandlerResult<Response<BoxBody>>
 where
@@ -32,7 +34,7 @@ where
     if method == Method::GET && path == "/health" {
         handle_health(req)
     } else {
-        handle_proxy(req, keymap).await
+        handle_proxy(req, config, keymap).await
     }
 }
 
@@ -45,6 +47,7 @@ pub fn handle_health(_req: Request<impl Body>) -> HandlerResult<Response<BoxBody
 
 pub async fn handle_proxy<B: Body>(
     req: Request<B>,
+    config: Arc<ConfigData>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
 ) -> HandlerResult<Response<BoxBody>>
 where
@@ -54,11 +57,19 @@ where
     let uri = req.uri().clone();
     let path = uri.path();
     let headers = req.headers().clone();
-    let user_agent = match headers.get("user-agent") {
-        Some(header) => header.to_str().unwrap_or("no-agent"),
-        None => "no-agent",
-    };
-    debug!("{method} {path} {user_agent}");
+
+    if config.verbose {
+        let formatted_headers = headers.iter()
+            .map(|(key, value)| {
+                let value = value.to_str().unwrap_or("<invalid>");
+                format!(" {key}: {value}\n")
+            })
+            .reduce(|mut acc, item| {
+                acc.push_str(item.as_ref());
+                acc
+            });
+        debug!("{method} {path}\nHeaders:{}", formatted_headers.unwrap_or("No headers".into()));
+    }
 
     // All store/envelope requests are POST
     if method != Method::POST {
@@ -190,40 +201,57 @@ mod tests {
 
     use super::{full, handle_request};
     use crate::{
-        config::KeyRing,
-        dsn::{DsnKeyRing, make_key_map},
+        config::{ConfigData, KeyRing},
+        dsn::{make_key_map, DsnKeyRing}, logging::LogFormat,
     };
     use http_body_util::{BodyExt, combinators::BoxBody};
     use hyper::{Request, Response, StatusCode, body::Bytes};
 
-    fn make_test_keymap() -> Arc<HashMap<String, DsnKeyRing>> {
-        let keydata = vec![
-            KeyRing {
-                inbound: Some(
-                    "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
-                ),
-                outbound: vec![
-                    Some(
-                        "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
-                            .to_string(),
-                    ),
-                    Some(
-                        "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
-                            .to_string(),
-                    ),
-                ],
-            },
-            KeyRing {
-                inbound: Some(
-                    "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
-                ),
-                outbound: vec![Some(
-                    "https://bbbbbb12345678901234567890123456@target.example.com/7890".to_string(),
-                )],
-            },
-        ];
-        let keymap = make_key_map(keydata);
+    fn make_test_keymap(config: &Arc<ConfigData>) -> Arc<HashMap<String, DsnKeyRing>> {
+        let keymap = make_key_map(config.keys.clone());
         Arc::new(keymap)
+    }
+
+    fn make_test_config() -> Arc<ConfigData> {
+        let config = ConfigData {
+            sentry_dsn: None,
+            sentry_env: None,
+            traces_sample_rate: None,
+            log_filter: Some("debug".into()),
+            log_format: Some(LogFormat::Text),
+            statsd_addr: None,
+            default_metrics_tags: None,
+            ip: "127.0.0.1".into(),
+            port: 3000,
+            verbose: true,
+            keys: vec![
+                KeyRing {
+                    inbound: Some(
+                        "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
+                    ),
+                    outbound: vec![
+                        Some(
+                            "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
+                                .to_string(),
+                        ),
+                        Some(
+                            "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
+                                .to_string(),
+                        ),
+                    ],
+                },
+                KeyRing {
+                    inbound: Some(
+                        "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
+                    ),
+                    outbound: vec![Some(
+                        "https://bbbbbb12345678901234567890123456@target.example.com/7890".to_string(),
+                    )],
+                },
+            ],
+        };
+
+        Arc::new(config)
     }
 
     async fn extract_body(response: Response<BoxBody<Bytes, hyper::Error>>) -> String {
@@ -234,12 +262,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_request_health() {
-        let keymap = make_test_keymap();
+        let config = make_test_config();
+        let keymap = make_test_keymap(&config);
         let builder = Request::builder()
             .method("GET")
             .uri("http://example.com/health");
         let request = builder.body(full("")).unwrap();
-        let response_res = handle_request(request, keymap).await;
+        let response_res = handle_request(request, config, keymap).await;
 
         assert!(response_res.is_ok());
         let response = response_res.unwrap();
@@ -250,12 +279,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_request_proxy_incorrect_method() {
-        let keymap = make_test_keymap();
+        let config = make_test_config();
+        let keymap = make_test_keymap(&config);
         let builder = Request::builder()
             .method("GET")
             .uri("http://localhost:3000/store");
         let request = builder.body(full("")).unwrap();
-        let response_res = handle_request(request, keymap).await;
+        let response_res = handle_request(request, config, keymap).await;
 
         assert!(response_res.is_ok());
         let response = response_res.unwrap();
@@ -267,13 +297,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_proxy_no_dsn() {
-        let keymap = make_test_keymap();
+        let config = make_test_config();
+        let keymap = make_test_keymap(&config);
         let builder = Request::builder()
             .method("POST")
             .uri("http://localhost:3000/store");
 
         let request = builder.body(full("")).unwrap();
-        let response_res = handle_request(request, keymap).await;
+        let response_res = handle_request(request, config, keymap).await;
 
         assert!(response_res.is_ok());
         let response = response_res.unwrap();
@@ -285,14 +316,15 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_proxy_incorrect_dsn() {
-        let keymap = make_test_keymap();
+        let config = make_test_config();
+        let keymap = make_test_keymap(&config);
         let builder = Request::builder()
             .method("POST")
             .header("Authorization", "sentry_key=not-there")
             .uri("http://localhost:3000/store");
 
         let request = builder.body(full("")).unwrap();
-        let response_res = handle_request(request, keymap).await;
+        let response_res = handle_request(request, config, keymap).await;
 
         assert!(response_res.is_ok());
         let response = response_res.unwrap();
