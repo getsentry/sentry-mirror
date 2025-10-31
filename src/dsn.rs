@@ -139,7 +139,7 @@ pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
         out.push_str(format!("Inbound: {}\n", keyring.inbound).as_ref());
         out.push_str("Outbound:\n");
         for outbound in keyring.outbound.iter() {
-            out.push_str(format!("- {} \n", outbound).as_ref());
+            out.push_str(format!("- {}\n", outbound).as_ref());
         }
     }
     out
@@ -313,5 +313,23 @@ mod tests {
 
         let res = from_request(&uri, &headers);
         assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_format_key_map() {
+        let keys = vec![KeyRing {
+            inbound: Some("https://abcdef@sentry.io/1234".to_string()),
+            outbound: vec![
+                Some("https://ghijkl@sentry.io/567".to_string()),
+                Some("https://mnopq@sentry.io/890".to_string()),
+            ],
+        }];
+        let key_map = make_key_map(keys);
+        let output = format_key_map(&key_map);
+        dbg!(&output);
+        assert!(output.contains("Inbound: https://abcdef@sentry.io/1234"));
+        assert!(output.contains("Outbound:\n"));
+        assert!(output.contains("- https://ghijkl@sentry.io/567\n"));
+        assert!(output.contains("- https://mnopq@sentry.io/890\n"));
     }
 }
