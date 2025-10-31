@@ -14,14 +14,14 @@ use crate::dsn;
 use crate::request;
 
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
-type Result<T> = std::result::Result<T, GenericError>;
+type HandlerResult<T> = std::result::Result<T, GenericError>;
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
 pub async fn handle_request<B: Body>(
     req: Request<B>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
-) -> Result<Response<BoxBody>> 
-    where <B as Body>::Error: std::marker::Sync + std::marker::Send + std::error:: Error + 'static
+) -> HandlerResult<Response<BoxBody>> 
+    where B::Error: std::error::Error + Sync + Send + 'static
 {
     let method = req.method();
     let path = req.uri().path().to_string();
@@ -35,7 +35,7 @@ pub async fn handle_request<B: Body>(
     }
 }
 
-pub fn handle_health(_req: Request<impl Body>) -> Result<Response<BoxBody>> {
+pub fn handle_health(_req: Request<impl Body>) -> HandlerResult<Response<BoxBody>> {
     Ok(Response::builder()
         .status(StatusCode::OK)
         .body(full("ok"))
@@ -45,8 +45,8 @@ pub fn handle_health(_req: Request<impl Body>) -> Result<Response<BoxBody>> {
 pub async fn handle_proxy<B: Body>(
     req: Request<B>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
-) -> Result<Response<BoxBody>> 
-    where <B as Body>::Error: std::marker::Sync + std::marker::Send + std::error:: Error + 'static
+) -> HandlerResult<Response<BoxBody>> 
+    where B::Error: std::error::Error + Sync + Send + 'static
 {
     let method = req.method();
     let uri = req.uri().clone();
