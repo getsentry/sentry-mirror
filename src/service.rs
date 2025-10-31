@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Body, Bytes};
 use hyper::{Method, StatusCode};
 use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
@@ -17,10 +17,12 @@ type GenericError = Box<dyn std::error::Error + Send + Sync>;
 type Result<T> = std::result::Result<T, GenericError>;
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
-pub async fn handle_request(
-    req: Request<Incoming>,
+pub async fn handle_request<B: Body>(
+    req: Request<B>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
-) -> Result<Response<BoxBody>> {
+) -> Result<Response<BoxBody>> 
+    where <B as Body>::Error: std::marker::Sync + std::marker::Send + std::error:: Error + 'static
+{
     let method = req.method();
     let path = req.uri().path().to_string();
 
@@ -33,17 +35,19 @@ pub async fn handle_request(
     }
 }
 
-pub fn handle_health(_req: Request<Incoming>) -> Result<Response<BoxBody>> {
+pub fn handle_health(_req: Request<impl Body>) -> Result<Response<BoxBody>> {
     Ok(Response::builder()
         .status(StatusCode::OK)
         .body(full("ok"))
         .unwrap())
 }
 
-pub async fn handle_proxy(
-    req: Request<Incoming>,
+pub async fn handle_proxy<B: Body>(
+    req: Request<B>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
-) -> Result<Response<BoxBody>> {
+) -> Result<Response<BoxBody>> 
+    where <B as Body>::Error: std::marker::Sync + std::marker::Send + std::error:: Error + 'static
+{
     let method = req.method();
     let uri = req.uri().clone();
     let path = uri.path();
@@ -176,4 +180,44 @@ async fn send_request(req: Request<Full<Bytes>>) -> ResponseFuture {
     let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
 
     client.request(req)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use http_body_util::{combinators::BoxBody, BodyExt};
+    use hyper::{body::Bytes, Request, Response, StatusCode};
+    use crate::dsn;
+    use super::{handle_request, full};
+
+    fn make_test_keymap() -> Arc<HashMap<String, dsn::DsnKeyRing>> {
+        let keymap = HashMap::new();
+        Arc::new(keymap)
+    }
+
+    async fn extract_body(response: Response<BoxBody<Bytes, hyper::Error>>) -> String {
+        let body_bytes = response
+            .into_body()
+            .collect()
+            .await
+            .unwrap()
+            .to_bytes();
+
+        String::from_utf8(body_bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_health() {
+        let keymap = make_test_keymap();
+        let builder = Request::builder().method("GET").uri("http://example.com/health");
+        let request = builder.body(full("")).unwrap();
+        let response_res = handle_request(request, keymap).await;
+
+        assert!(response_res.is_ok());
+        let response = response_res.unwrap();
+        assert_eq!(StatusCode::OK, response.status());
+        let body_str = extract_body(response).await;
+        assert_eq!("ok", body_str);
+    }
 }
