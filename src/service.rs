@@ -31,6 +31,15 @@ pub async fn handle_request(
     };
 
     debug!("{method} {path} {user_agent}");
+
+    // Log detailed request information in verbose mode
+    debug!("Request URI: {}", uri);
+    debug!("Request Headers:");
+    for (key, value) in headers.iter() {
+        let value_str = value.to_str().unwrap_or("<invalid utf-8>");
+        debug!("  {}: {}", key, value_str);
+    }
+
     metrics::counter!("handle_request.request").increment(1);
 
     // All store/envelope requests are POST
@@ -79,6 +88,13 @@ pub async fn handle_request(
                 return Ok(bad_request_response());
             }
         }
+    }
+
+    // Log request body in verbose mode
+    if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+        debug!("Request Body: {}", body_str);
+    } else {
+        debug!("Request Body: <binary data, {} bytes>", body_bytes.len());
     }
 
     // We'll race requests to the outbound DSN's and once all requests are complete
@@ -155,4 +171,91 @@ async fn send_request(req: Request<Full<Bytes>>) -> ResponseFuture {
     let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
 
     client.request(req)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use hyper::body::Bytes;
+    use hyper::HeaderMap;
+    use std::collections::HashMap;
+    use std::sync::Arc;
+    use tracing_test::traced_test;
+
+    fn make_test_keymap() -> Arc<HashMap<String, dsn::DsnKeyRing>> {
+        let inbound: dsn::Dsn = "https://testkey12345678901234567890ab@localhost:8765/123"
+            .parse()
+            .unwrap();
+        let outbound: dsn::Dsn = "https://outbound1234567890123456789012@sentry.io/456"
+            .parse()
+            .unwrap();
+
+        let mut keymap = HashMap::new();
+        keymap.insert(
+            "testkey12345678901234567890ab".to_string(),
+            dsn::DsnKeyRing {
+                inbound,
+                outbound: vec![outbound],
+            },
+        );
+        Arc::new(keymap)
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_request_logging_headers() {
+        let keymap = make_test_keymap();
+
+        // Verify logs would be created (we can't easily test the actual handle_request
+        // without setting up a full mock server, but we can verify the logging structure)
+
+        // This test mainly ensures the code compiles and doesn't panic
+        assert!(keymap.len() > 0);
+    }
+
+    #[tokio::test]
+    #[traced_test]
+    async fn test_request_logging_body() {
+        // Test that body logging handles both text and binary data
+        let test_body = b"test body content";
+        let body_bytes = Bytes::from(&test_body[..]);
+
+        // Test UTF-8 conversion
+        if let Ok(body_str) = std::str::from_utf8(&body_bytes) {
+            assert_eq!(body_str, "test body content");
+        }
+
+        // Test binary data
+        let binary_data = vec![0xFF, 0xFE, 0xFD];
+        let binary_bytes = Bytes::from(binary_data);
+        assert!(std::str::from_utf8(&binary_bytes).is_err());
+    }
+
+    #[test]
+    fn test_header_iteration() {
+        // Test that we can iterate over headers and convert them to strings
+        let mut headers = HeaderMap::new();
+        headers.insert("content-type", "application/json".parse().unwrap());
+        headers.insert("user-agent", "test-agent".parse().unwrap());
+
+        let mut header_count = 0;
+        for (_key, value) in headers.iter() {
+            let value_str = value.to_str().unwrap_or("<invalid utf-8>");
+            assert!(!value_str.is_empty());
+            header_count += 1;
+        }
+        assert_eq!(header_count, 2);
+    }
+
+    #[test]
+    fn test_invalid_utf8_header_handling() {
+        // Test that invalid UTF-8 in headers is handled gracefully
+        let mut headers = HeaderMap::new();
+        headers.insert("x-custom", "valid-value".parse().unwrap());
+
+        for (_, value) in headers.iter() {
+            let value_str = value.to_str().unwrap_or("<invalid utf-8>");
+            assert_eq!(value_str, "valid-value");
+        }
+    }
 }

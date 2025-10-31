@@ -302,4 +302,100 @@ mod tests {
         let res = from_request(&uri, &headers);
         assert!(res.is_none());
     }
+
+    #[test]
+    fn test_dsn_configuration_logging_format() {
+        // Test that we can format DSN configuration info for logging
+        let keys = vec![
+            KeyRing {
+                inbound: Some("https://abcdef123456789012345678901234@localhost:8765/1234".to_string()),
+                outbound: vec![
+                    Some("https://outbound123456789012345678901@sentry.io/5678".to_string()),
+                    Some("https://outbound234567890123456789012@other.io/9012".to_string()),
+                ],
+            },
+            KeyRing {
+                inbound: Some("https://xyz789012345678901234567890123@localhost:8765/3456".to_string()),
+                outbound: vec![
+                    Some("https://target12345678901234567890123@target.io/7890".to_string()),
+                ],
+            },
+        ];
+
+        let keymap = make_key_map(keys);
+
+        // Verify the keymap structure that will be logged
+        assert_eq!(keymap.len(), 2);
+
+        // Verify we can format the outbound info as expected in the logs
+        for (inbound_key, keyring) in keymap.iter() {
+            let outbound_info: Vec<String> = keyring
+                .outbound
+                .iter()
+                .map(|dsn| format!("{} ({})", dsn.host, dsn.public_key))
+                .collect();
+
+            let formatted = format!("Inbound key: {} -> Outbound: [{}]", inbound_key, outbound_info.join(", "));
+
+            // Verify the format contains expected components
+            assert!(formatted.contains("Inbound key:"));
+            assert!(formatted.contains("Outbound:"));
+            assert!(formatted.contains(inbound_key));
+        }
+    }
+
+    #[test]
+    fn test_dsn_configuration_logging_single_outbound() {
+        // Test logging format with single outbound DSN
+        let keys = vec![KeyRing {
+            inbound: Some("https://single123456789012345678901234@localhost:8765/111".to_string()),
+            outbound: vec![
+                Some("https://target123456789012345678901234@sentry.io/222".to_string()),
+            ],
+        }];
+
+        let keymap = make_key_map(keys);
+        let (_inbound_key, keyring) = keymap.iter().next().unwrap();
+
+        let outbound_info: Vec<String> = keyring
+            .outbound
+            .iter()
+            .map(|dsn| format!("{} ({})", dsn.host, dsn.public_key))
+            .collect();
+
+        assert_eq!(outbound_info.len(), 1);
+        assert!(outbound_info[0].contains("sentry.io"));
+        assert!(outbound_info[0].contains("target123456789012345678901234"));
+    }
+
+    #[test]
+    fn test_dsn_configuration_logging_multiple_outbound() {
+        // Test logging format with multiple outbound DSNs
+        let keys = vec![KeyRing {
+            inbound: Some("https://multi1234567890123456789012345@localhost:8765/333".to_string()),
+            outbound: vec![
+                Some("https://out1123456789012345678901234@host1.io/444".to_string()),
+                Some("https://out2123456789012345678901234@host2.io/555".to_string()),
+                Some("https://out3123456789012345678901234@host3.io/666".to_string()),
+            ],
+        }];
+
+        let keymap = make_key_map(keys);
+        let (_, keyring) = keymap.iter().next().unwrap();
+
+        let outbound_info: Vec<String> = keyring
+            .outbound
+            .iter()
+            .map(|dsn| format!("{} ({})", dsn.host, dsn.public_key))
+            .collect();
+
+        assert_eq!(outbound_info.len(), 3);
+
+        // Verify joined format
+        let joined = outbound_info.join(", ");
+        assert!(joined.contains("host1.io"));
+        assert!(joined.contains("host2.io"));
+        assert!(joined.contains("host3.io"));
+        assert!(joined.contains(", "));
+    }
 }

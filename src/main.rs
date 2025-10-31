@@ -60,6 +60,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let keymap = dsn::make_key_map(configdata.keys);
     let arcmap = Arc::new(keymap);
 
+    // Log DSN configuration in verbose mode
+    info!("DSN Configuration:");
+    for (inbound_key, keyring) in arcmap.iter() {
+        let outbound_info: Vec<String> = keyring
+            .outbound
+            .iter()
+            .map(|dsn| format!("{} ({})", dsn.host, dsn.public_key))
+            .collect();
+        info!(
+            "  Inbound key: {} -> Outbound: [{}]",
+            inbound_key,
+            outbound_info.join(", ")
+        );
+    }
+
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
