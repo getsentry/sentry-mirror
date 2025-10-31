@@ -5,7 +5,7 @@ use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
-use hyper::body::{Bytes, Incoming};
+use hyper::body::{Body, Bytes};
 use hyper::{Method, StatusCode};
 use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
@@ -14,13 +14,42 @@ use crate::dsn;
 use crate::request;
 
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
-type Result<T> = std::result::Result<T, GenericError>;
+type HandlerResult<T> = std::result::Result<T, GenericError>;
 type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
-pub async fn handle_request(
-    req: Request<Incoming>,
+pub async fn handle_request<B: Body>(
+    req: Request<B>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
-) -> Result<Response<BoxBody>> {
+) -> HandlerResult<Response<BoxBody>>
+where
+    B::Error: std::error::Error + Sync + Send + 'static,
+{
+    let method = req.method();
+    let path = req.uri().path().to_string();
+
+    metrics::counter!("handle_request.request", "path" => path.clone()).increment(1);
+
+    if method == Method::GET && path == "/health" {
+        handle_health(req)
+    } else {
+        handle_proxy(req, keymap).await
+    }
+}
+
+pub fn handle_health(_req: Request<impl Body>) -> HandlerResult<Response<BoxBody>> {
+    Ok(Response::builder()
+        .status(StatusCode::OK)
+        .body(full("ok"))
+        .unwrap())
+}
+
+pub async fn handle_proxy<B: Body>(
+    req: Request<B>,
+    keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
+) -> HandlerResult<Response<BoxBody>>
+where
+    B::Error: std::error::Error + Sync + Send + 'static,
+{
     let method = req.method();
     let uri = req.uri().clone();
     let path = uri.path();
@@ -29,13 +58,11 @@ pub async fn handle_request(
         Some(header) => header.to_str().unwrap_or("no-agent"),
         None => "no-agent",
     };
-
     debug!("{method} {path} {user_agent}");
-    metrics::counter!("handle_request.request").increment(1);
 
     // All store/envelope requests are POST
     if method != Method::POST {
-        metrics::counter!("handle_request.incorrect_method", "method" => method.to_string())
+        metrics::counter!("handle_proxy.incorrect_method", "method" => method.to_string())
             .increment(1);
         debug!("Received a non POST request");
 
@@ -49,7 +76,7 @@ pub async fn handle_request(
     let found_dsn = dsn::from_request(&uri, &headers);
     if found_dsn.is_none() {
         debug!("Could not find a DSN in the request headers or URI");
-        metrics::counter!("handle_request.no_dsn").increment(1);
+        metrics::counter!("handle_proxy.no_dsn").increment(1);
 
         return Ok(bad_request_response());
     }
@@ -60,7 +87,7 @@ pub async fn handle_request(
         // If a DSN cannot be found -> empty response
         None => {
             debug!("Could not find a match DSN in the configured keys");
-            metrics::counter!("handle_request.unknown_dsn").increment(1);
+            metrics::counter!("handle_proxy.unknown_dsn").increment(1);
 
             return Ok(bad_request_response());
         }
@@ -73,7 +100,7 @@ pub async fn handle_request(
         body_bytes = match request::decode_body(request_encoding, &body_bytes) {
             Ok(decompressed) => decompressed,
             Err(e) => {
-                metrics::counter!("handle_request.decode_error").increment(1);
+                metrics::counter!("handle_proxy.decode_error").increment(1);
                 warn!("Could not decode request body: {0:?}", e);
 
                 return Ok(bad_request_response());
@@ -85,7 +112,7 @@ pub async fn handle_request(
     // we use the body of the first response
     let mut responses = Vec::new();
     for outbound_dsn in keyring.outbound.iter() {
-        metrics::counter!("handle_request.outbound_request.start").increment(1);
+        metrics::counter!("handle_proxy.outbound_request.start").increment(1);
         debug!("Creating outbound request for {0}", &outbound_dsn.host);
 
         let request_builder = request::make_outbound_request(&uri, &headers, outbound_dsn);
@@ -112,13 +139,13 @@ pub async fn handle_request(
             continue;
         }
         if let Ok(response) = response_res {
-            metrics::counter!("handle_request.outbound_request.success").increment(1);
+            metrics::counter!("handle_proxy.outbound_request.success").increment(1);
             if let Ok(response_body) = response.collect().await {
                 resp_body = response_body.to_bytes();
                 found_body = true;
             }
         } else {
-            metrics::counter!("handle_request.outbound_request.failed").increment(1);
+            metrics::counter!("handle_proxy.outbound_request.failed").increment(1);
             warn!("Could not make request: {0:?}", response_res.err());
         }
     }
@@ -132,7 +159,7 @@ pub async fn handle_request(
         )
         .header("Cross-Origin-Resource-Policy", "cross-origin");
 
-    metrics::counter!("handle_request.response").increment(1);
+    metrics::counter!("handle_proxy.response").increment(1);
     Ok(response_builder.body(full(resp_body)).unwrap())
 }
 
@@ -155,4 +182,123 @@ async fn send_request(req: Request<Full<Bytes>>) -> ResponseFuture {
     let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
 
     client.request(req)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::{collections::HashMap, sync::Arc};
+
+    use super::{full, handle_request};
+    use crate::{
+        config::KeyRing,
+        dsn::{DsnKeyRing, make_key_map},
+    };
+    use http_body_util::{BodyExt, combinators::BoxBody};
+    use hyper::{Request, Response, StatusCode, body::Bytes};
+
+    fn make_test_keymap() -> Arc<HashMap<String, DsnKeyRing>> {
+        let keydata = vec![
+            KeyRing {
+                inbound: Some(
+                    "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
+                ),
+                outbound: vec![
+                    Some(
+                        "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
+                            .to_string(),
+                    ),
+                    Some(
+                        "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
+                            .to_string(),
+                    ),
+                ],
+            },
+            KeyRing {
+                inbound: Some(
+                    "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
+                ),
+                outbound: vec![Some(
+                    "https://bbbbbb12345678901234567890123456@target.example.com/7890".to_string(),
+                )],
+            },
+        ];
+        let keymap = make_key_map(keydata);
+        Arc::new(keymap)
+    }
+
+    async fn extract_body(response: Response<BoxBody<Bytes, hyper::Error>>) -> String {
+        let body_bytes = response.into_body().collect().await.unwrap().to_bytes();
+
+        String::from_utf8(body_bytes.to_vec()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_health() {
+        let keymap = make_test_keymap();
+        let builder = Request::builder()
+            .method("GET")
+            .uri("http://example.com/health");
+        let request = builder.body(full("")).unwrap();
+        let response_res = handle_request(request, keymap).await;
+
+        assert!(response_res.is_ok());
+        let response = response_res.unwrap();
+        assert_eq!(StatusCode::OK, response.status());
+        let body = extract_body(response).await;
+        assert_eq!("ok", body);
+    }
+
+    #[tokio::test]
+    async fn test_handle_request_proxy_incorrect_method() {
+        let keymap = make_test_keymap();
+        let builder = Request::builder()
+            .method("GET")
+            .uri("http://localhost:3000/store");
+        let request = builder.body(full("")).unwrap();
+        let response_res = handle_request(request, keymap).await;
+
+        assert!(response_res.is_ok());
+        let response = response_res.unwrap();
+
+        assert_eq!(StatusCode::METHOD_NOT_ALLOWED, response.status());
+        let body = extract_body(response).await;
+        assert_eq!("Method not allowed", body);
+    }
+
+    #[tokio::test]
+    async fn test_handle_proxy_no_dsn() {
+        let keymap = make_test_keymap();
+        let builder = Request::builder()
+            .method("POST")
+            .uri("http://localhost:3000/store");
+
+        let request = builder.body(full("")).unwrap();
+        let response_res = handle_request(request, keymap).await;
+
+        assert!(response_res.is_ok());
+        let response = response_res.unwrap();
+
+        assert_eq!(StatusCode::BAD_REQUEST, response.status());
+        let body = extract_body(response).await;
+        assert_eq!("No DSN found", body);
+    }
+
+    #[tokio::test]
+    async fn test_handle_proxy_incorrect_dsn() {
+        let keymap = make_test_keymap();
+        let builder = Request::builder()
+            .method("POST")
+            .header("Authorization", "sentry_key=not-there")
+            .uri("http://localhost:3000/store");
+
+        let request = builder.body(full("")).unwrap();
+        let response_res = handle_request(request, keymap).await;
+
+        assert!(response_res.is_ok());
+        let response = response_res.unwrap();
+
+        assert_eq!(StatusCode::BAD_REQUEST, response.status());
+        let body = extract_body(response).await;
+        assert_eq!("No DSN found", body);
+    }
 }
