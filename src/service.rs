@@ -1,6 +1,7 @@
 use futures::future::join_all;
 use hyper_util::client::legacy::{Client, ResponseFuture};
 use hyper_util::rt::TokioExecutor;
+use std::time::Instant;
 use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, warn};
 
@@ -102,8 +103,11 @@ where
         Some(v) => v,
         // If a DSN cannot be found -> empty response
         None => {
-            debug!("Could not find a match DSN in the configured keys");
-            metrics::counter!("handle_proxy.unknown_dsn").increment(1);
+            debug!("Could not find a matching DSN in the configured keys. Got DSN: {0}", public_key);
+            metrics::counter!(
+                "handle_proxy.unknown_dsn",
+                "inbound_key" => public_key.clone(),
+            ).increment(1);
 
             return Ok(bad_request_response());
         }
@@ -121,7 +125,10 @@ where
         body_bytes = match request::decode_body(request_encoding, &body_bytes) {
             Ok(decompressed) => decompressed,
             Err(e) => {
-                metrics::counter!("handle_proxy.decode_error").increment(1);
+                metrics::counter!(
+                    "handle_proxy.decode_error",
+                    "inbound_key" => public_key.clone(),
+                ).increment(1);
                 warn!("Could not decode request body: {0:?}", e);
 
                 return Ok(bad_request_response());
@@ -133,43 +140,51 @@ where
     // we use the body of the first response
     let mut responses = Vec::new();
     for outbound_dsn in keyring.outbound.iter() {
-        metrics::counter!("handle_proxy.outbound_request.start").increment(1);
-        debug!("Creating outbound request for {0}", &outbound_dsn.host);
+        let outbound_host = outbound_dsn.host.clone();
+        metrics::counter!(
+            "handle_proxy.outbound_request.start",
+            "outbound_host" => outbound_host.clone()
+        ).increment(1);
+        debug!("Creating outbound request for {0}", &outbound_host);
 
+        let build_request_timer = Instant::now();
         let request_builder = request::make_outbound_request(&uri, &headers, outbound_dsn);
         let body_out = match request::replace_envelope_dsn(&body_bytes, outbound_dsn) {
             Some(new_body) => new_body,
             None => body_bytes.clone(),
         };
         let request = request_builder.body(Full::new(body_out));
+        metrics::histogram!(
+            "handle_proxy.build_request.duration",
+            "outbound_host" => outbound_host.clone()
+        ).record(build_request_timer.elapsed());
 
         if let Ok(outbound_request) = request {
-            let fut_res = send_request(outbound_request);
+            let fut_res = send_request(outbound_request, outbound_host.clone());
             responses.push(fut_res);
         } else {
             warn!("Could not build request {0:?}", request.err());
         }
     }
-
     let mut found_body = false;
     let mut resp_body = Bytes::new();
-    // Wait for responses to finish and use the first one's body
-    for fut_res in join_all(responses).await {
-        let response_res = fut_res.await;
-        if found_body {
-            continue;
-        }
-        if let Ok(response) = response_res {
-            metrics::counter!("handle_proxy.outbound_request.success").increment(1);
 
-            if config.verbose {
-                let response_headers = response.headers();
-                if let Some(host) = response_headers.get("Host") {
-                    debug!(
-                        "Received response from {}",
-                        host.to_str().unwrap_or("<invalid host>")
-                    );
-                }
+    // Wait for responses to finish and use the first one's body
+    for (resp_future, resp_hostname, request_start) in join_all(responses).await {
+        let response_res = resp_future.await;
+        if let Ok(response) = response_res {
+            debug!("Received response from {}", &resp_hostname);
+            metrics::counter!(
+                "handle_proxy.outbound_request.success",
+                "outbound_host" => resp_hostname.clone(),
+            ).increment(1);
+            metrics::histogram!(
+                "handle_proxy.send_request.duration",
+                "outbound_host" => resp_hostname.clone()
+            ).record(request_start.elapsed());
+
+            if found_body {
+                continue;
             }
             if let Ok(response_body) = response.collect().await {
                 resp_body = response_body.to_bytes();
@@ -190,7 +205,11 @@ where
         )
         .header("Cross-Origin-Resource-Policy", "cross-origin");
 
-    metrics::counter!("handle_proxy.response").increment(1);
+    metrics::counter!(
+        "handle_proxy.response",
+        "inbound_key" => public_key.clone(),
+    ).increment(1);
+
     Ok(response_builder.body(full(resp_body)).unwrap())
 }
 
@@ -208,11 +227,11 @@ fn full<T: Into<Bytes>>(chunk: T) -> BoxBody {
 }
 
 /// Send a request to its destination async
-async fn send_request(req: Request<Full<Bytes>>) -> ResponseFuture {
+async fn send_request(req: Request<Full<Bytes>>, request_host: String) -> (ResponseFuture, String, Instant) {
     let https = HttpsConnector::new();
     let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
 
-    client.request(req)
+    (client.request(req), request_host, Instant::now())
 }
 
 #[cfg(test)]
