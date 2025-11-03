@@ -1,14 +1,18 @@
+use crate::Args;
+use figment::{
+    Figment, Metadata, Profile, Provider,
+    providers::{Env, Format, Yaml},
+};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::collections::BTreeMap;
-use std::path::Path;
-use std::{fs, io};
+use std::fs;
 
 use crate::logging::LogFormat;
 
 /// A set of inbound and outbound keys.
 /// Requests sent to an inbound DSN are mirrored to all outbound DSNs
-#[derive(Debug, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct KeyRing {
     /// Inbound keys are virtual DSNs that the mirror will accept traffic on
     pub inbound: Option<String>,
@@ -30,10 +34,10 @@ pub struct ConfigData {
 
     /// The log filter to apply application logging to.
     /// See https://docs.rs/tracing-subscriber/latest/tracing_subscriber/filter/struct.EnvFilter.html#directives
-    pub log_filter: Option<String>,
+    pub log_filter: String,
 
     /// The log format to use
-    pub log_format: Option<LogFormat>,
+    pub log_format: LogFormat,
 
     /// The statsd address to report metrics to.
     pub statsd_addr: Option<String>,
@@ -46,6 +50,10 @@ pub struct ConfigData {
 
     /// The port the http server will listen on
     pub port: u16,
+
+    /// Whether or not verbose mode was enabled.
+    /// When enabled, debug logging will be output.
+    pub verbose: bool,
 
     /// A list of keypairs that the server will handle.
     pub keys: Vec<KeyRing>,
@@ -61,17 +69,47 @@ impl ConfigData {
     }
 }
 
-/// Load configuration data from a path and parse it into `ConfigData`
-pub fn load_config(path: &Path) -> Result<ConfigData, String> {
-    let f = match fs::File::open(path) {
-        Ok(f) => f,
-        Err(_) => return Err(format!("{}", path.display())),
-    };
-    let configdata = match serde_yaml::from_reader(io::BufReader::new(f)) {
-        Ok(data) => data,
-        Err(err) => return Err(format!("{}", err)),
-    };
-    Ok(configdata)
+impl Default for ConfigData {
+    fn default() -> Self {
+        Self {
+            sentry_dsn: None,
+            sentry_env: None,
+            traces_sample_rate: None,
+            log_filter: "info".into(),
+            log_format: LogFormat::Text,
+            statsd_addr: None,
+            default_metrics_tags: None,
+            ip: "127.0.0.1".into(),
+            port: 3000,
+            verbose: false,
+            keys: vec![],
+        }
+    }
+}
+
+impl Provider for ConfigData {
+    fn metadata(&self) -> Metadata {
+        Metadata::named("sentry-mirror defaults")
+    }
+
+    fn data(&self) -> Result<figment::value::Map<Profile, figment::value::Dict>, figment::Error> {
+        figment::providers::Serialized::defaults(ConfigData::default()).data()
+    }
+}
+
+pub fn from_args(args: &Args) -> Result<ConfigData, Box<figment::Error>> {
+    let config_path = &args.config;
+    let mut config: ConfigData = Figment::from(ConfigData::default())
+        .merge(Yaml::file(config_path))
+        .merge(Env::prefixed("SENTRY_MIRROR_"))
+        .extract()?;
+
+    if args.verbose {
+        config.verbose = true;
+        config.log_filter = "debug".into();
+    }
+
+    Ok(config)
 }
 
 pub fn get_version() -> &'static str {
