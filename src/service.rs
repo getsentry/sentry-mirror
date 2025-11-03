@@ -103,11 +103,15 @@ where
         Some(v) => v,
         // If a DSN cannot be found -> empty response
         None => {
-            debug!("Could not find a matching DSN in the configured keys. Got DSN: {0}", public_key);
+            debug!(
+                "Could not find a matching DSN in the configured keys. Got DSN: {0}",
+                public_key
+            );
             metrics::counter!(
                 "handle_proxy.unknown_dsn",
                 "inbound_key" => public_key.clone(),
-            ).increment(1);
+            )
+            .increment(1);
 
             return Ok(bad_request_response());
         }
@@ -128,7 +132,8 @@ where
                 metrics::counter!(
                     "handle_proxy.decode_error",
                     "inbound_key" => public_key.clone(),
-                ).increment(1);
+                )
+                .increment(1);
                 warn!("Could not decode request body: {0:?}", e);
 
                 return Ok(bad_request_response());
@@ -144,7 +149,8 @@ where
         metrics::counter!(
             "handle_proxy.outbound_request.start",
             "outbound_host" => outbound_host.clone()
-        ).increment(1);
+        )
+        .increment(1);
         debug!("Creating outbound request for {0}", &outbound_host);
 
         let build_request_timer = Instant::now();
@@ -157,7 +163,8 @@ where
         metrics::histogram!(
             "handle_proxy.build_request.duration",
             "outbound_host" => outbound_host.clone()
-        ).record(build_request_timer.elapsed());
+        )
+        .record(build_request_timer.elapsed());
 
         if let Ok(outbound_request) = request {
             let fut_res = send_request(outbound_request, outbound_host.clone());
@@ -177,11 +184,13 @@ where
             metrics::counter!(
                 "handle_proxy.outbound_request.success",
                 "outbound_host" => resp_hostname.clone(),
-            ).increment(1);
+            )
+            .increment(1);
             metrics::histogram!(
                 "handle_proxy.send_request.duration",
                 "outbound_host" => resp_hostname.clone()
-            ).record(request_start.elapsed());
+            )
+            .record(request_start.elapsed());
 
             if found_body {
                 continue;
@@ -208,7 +217,8 @@ where
     metrics::counter!(
         "handle_proxy.response",
         "inbound_key" => public_key.clone(),
-    ).increment(1);
+    )
+    .increment(1);
 
     Ok(response_builder.body(full(resp_body)).unwrap())
 }
@@ -227,7 +237,10 @@ fn full<T: Into<Bytes>>(chunk: T) -> BoxBody {
 }
 
 /// Send a request to its destination async
-async fn send_request(req: Request<Full<Bytes>>, request_host: String) -> (ResponseFuture, String, Instant) {
+async fn send_request(
+    req: Request<Full<Bytes>>,
+    request_host: String,
+) -> (ResponseFuture, String, Instant) {
     let https = HttpsConnector::new();
     let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
 
