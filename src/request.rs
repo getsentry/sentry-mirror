@@ -1,3 +1,4 @@
+use brotli;
 use flate2::read::{DeflateDecoder, GzDecoder};
 use hyper::body::Bytes;
 use hyper::header::HeaderValue;
@@ -155,6 +156,13 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
     } else if encoding_value == "deflate" {
         let mut decoder = DeflateDecoder::new(body_vec.as_slice());
 
+        decoder
+            .read_to_end(&mut decompressed)
+            .map_err(BodyError::CouldNotDecode)?;
+
+        Ok(Bytes::from(decompressed))
+    } else if encoding_value == "br" {
+        let mut decoder = brotli::Decompressor::new(body_vec.as_slice(), 4096);
         decoder
             .read_to_end(&mut decompressed)
             .map_err(BodyError::CouldNotDecode)?;
@@ -425,6 +433,27 @@ mod tests {
 
         let bytes = Bytes::from(buffer_out);
         let header_val: HeaderValue = "deflate".parse().unwrap();
+        let res = decode_body(&header_val, &bytes);
+        assert!(res.is_ok());
+        let decoded = res.unwrap();
+
+        assert_eq!(
+            decoded.to_vec().as_slice(),
+            contents,
+            "should get the same data back"
+        );
+    }
+
+    #[test]
+    fn test_decode_body_brotli() {
+        let contents = b"some content to be compressed";
+        let params = brotli::enc::BrotliEncoderParams::default();
+        let mut encoder = brotli::CompressorReader::with_params(&contents[..], 4096, &params);
+        let mut buffer_out = Vec::new();
+        encoder.read_to_end(&mut buffer_out).unwrap();
+
+        let bytes = Bytes::from(buffer_out);
+        let header_val: HeaderValue = "br".parse().unwrap();
         let res = decode_body(&header_val, &bytes);
         assert!(res.is_ok());
         let decoded = res.unwrap();
