@@ -27,3 +27,4 @@ tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["std", "env-filter", "json"] }
 figment = { version = "0.10.19", features = ["yaml", "test", "env"] }
 brotli = "8.0.2"
+zstd = "0.13.3"

@@ -9,6 +9,7 @@ use regex::Regex;
 use serde_json::Value;
 use std::io::prelude::*;
 use tracing::warn;
+use zstd;
 
 use crate::dsn;
 
@@ -168,6 +169,21 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
             .map_err(BodyError::CouldNotDecode)?;
 
         Ok(Bytes::from(decompressed))
+    } else if encoding_value == "zstd" {
+        match zstd::Decoder::new(body_vec.as_slice()) {
+            Ok(mut decoder) => {
+                decoder
+                    .read_to_end(&mut decompressed)
+                    .map_err(BodyError::CouldNotDecode)?;
+
+                Ok(Bytes::from(decompressed))
+            }
+            Err(err) => {
+                warn!("Could not build decoder to read zstd stream {:?}", err);
+
+                Err(BodyError::CouldNotDecode(err))
+            }
+        }
     } else {
         warn!(encoding_value, "Unsupported content-encoding header value");
         Err(BodyError::UnsupportedCodec)
@@ -454,6 +470,26 @@ mod tests {
 
         let bytes = Bytes::from(buffer_out);
         let header_val: HeaderValue = "br".parse().unwrap();
+        let res = decode_body(&header_val, &bytes);
+        assert!(res.is_ok());
+        let decoded = res.unwrap();
+
+        assert_eq!(
+            decoded.to_vec().as_slice(),
+            contents,
+            "should get the same data back"
+        );
+    }
+
+    #[test]
+    fn test_decode_body_zstd() {
+        let contents = b"some content to be compressed";
+        let mut encoder = zstd::stream::read::Encoder::new(&contents[..], 2).unwrap();
+        let mut buffer_out = Vec::new();
+        encoder.read_to_end(&mut buffer_out).unwrap();
+
+        let bytes = Bytes::from(buffer_out);
+        let header_val: HeaderValue = "zstd".parse().unwrap();
         let res = decode_body(&header_val, &bytes);
         assert!(res.is_ok());
         let decoded = res.unwrap();
