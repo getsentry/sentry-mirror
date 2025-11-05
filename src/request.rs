@@ -1,4 +1,3 @@
-use brotli;
 use flate2::read::{DeflateDecoder, GzDecoder};
 use hyper::body::Bytes;
 use hyper::header::HeaderValue;
@@ -9,7 +8,6 @@ use regex::Regex;
 use serde_json::Value;
 use std::io::prelude::*;
 use tracing::warn;
-use zstd;
 
 use crate::dsn;
 
