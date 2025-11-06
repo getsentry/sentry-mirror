@@ -132,7 +132,8 @@ where
         let decode_body_time = Instant::now();
         body_bytes = match request::decode_body(request_encoding, &body_bytes) {
             Ok(decompressed) => {
-                metrics::histogram!("handle_proxy.decode_body.duration").record(decode_body_time.elapsed());
+                metrics::histogram!("handle_proxy.decode_body.duration")
+                    .record(decode_body_time.elapsed());
                 decompressed
             }
             Err(e) => {
