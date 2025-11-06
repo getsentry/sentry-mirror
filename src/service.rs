@@ -31,11 +31,14 @@ where
     let path = req.uri().path().to_string();
 
     metrics::counter!("handle_request.request", "path" => path.clone()).increment(1);
-
+    let request_timer = Instant::now();
     if method == Method::GET && path == "/health" {
         handle_health(req)
     } else {
-        handle_proxy(req, config, keymap).await
+        let res = handle_proxy(req, config, keymap).await;
+        metrics::histogram!("handle_proxy.duration").record(request_timer.elapsed());
+
+        res
     }
 }
 
@@ -126,8 +129,13 @@ where
     // Bodies can be compressed
     if headers.contains_key("content-encoding") {
         let request_encoding = headers.get("content-encoding").unwrap();
+        let decode_body_time = Instant::now();
         body_bytes = match request::decode_body(request_encoding, &body_bytes) {
-            Ok(decompressed) => decompressed,
+            Ok(decompressed) => {
+                metrics::histogram!("handle_proxy.decode_body.duration")
+                    .record(decode_body_time.elapsed());
+                decompressed
+            }
             Err(e) => {
                 metrics::counter!(
                     "handle_proxy.decode_error",
