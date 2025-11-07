@@ -120,7 +120,12 @@ where
         }
     };
 
+    let body_read_timer = Instant::now();
     let mut body_bytes = req.collect().await?.to_bytes();
+
+    metrics::histogram!("handle_proxy.body_read.duration", "inbound_key" => public_key.clone()).record(body_read_timer.elapsed());
+    metrics::histogram!("handle_proxy.body_bytes", "inbound_key" => public_key.clone()).record(body_bytes.len() as f64);
+
     if config.verbose {
         let body_str = str::from_utf8(&body_bytes).unwrap_or("<binary data>");
         debug!("Request Body: {}", body_str);
