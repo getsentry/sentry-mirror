@@ -136,7 +136,7 @@ pub async fn read_and_decode_body<B: Body>(
     config: &Arc<ConfigData>,
     request: Request<B>,
     headers: &HeaderMap,
-    public_key: &String,
+    public_key: &str,
 ) -> Result<Bytes, String>
 where
     B::Error: std::error::Error + Sync + Send + 'static,
@@ -149,9 +149,9 @@ where
     }
     let mut body_bytes = body_res.unwrap().to_bytes();
 
-    metrics::histogram!("handle_proxy.body_read.duration", "inbound_key" => public_key.clone())
+    metrics::histogram!("handle_proxy.body_read.duration", "inbound_key" => public_key.to_owned())
         .record(body_read_timer.elapsed());
-    metrics::histogram!("handle_proxy.body_bytes", "inbound_key" => public_key.clone())
+    metrics::histogram!("handle_proxy.body_bytes", "inbound_key" => public_key.to_owned())
         .record(body_bytes.len() as f64);
 
     if config.verbose {
@@ -173,7 +173,7 @@ where
             Err(e) => {
                 metrics::counter!(
                     "handle_proxy.decode_error",
-                    "inbound_key" => public_key.clone(),
+                    "inbound_key" => public_key.to_owned(),
                 )
                 .increment(1);
                 warn!("Could not decode request body: {0:?}", e);
