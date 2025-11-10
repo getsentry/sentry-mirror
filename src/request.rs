@@ -16,11 +16,7 @@ use crate::config::ConfigData;
 use crate::dsn;
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
-const NO_COPY_HEADERS: [&str; 3] = [
-    "host",
-    "x-forwarded-for",
-    "content-length",
-];
+const NO_COPY_HEADERS: [&str; 3] = ["host", "x-forwarded-for", "content-length"];
 
 /// Copy the relevant parts from `uri` and `headers` into a new request that can be sent
 /// to the outbound DSN. This function returns `RequestBuilder` because the body types
@@ -60,8 +56,8 @@ pub fn make_outbound_request(
 
     let outbound_headers = builder.headers_mut().unwrap();
     for (key, value) in headers.iter() {
-        if NO_COPY_HEADERS.contains(&key.as_str()) ||
-            (config.modify_envelope_header && key == "content-encoding")
+        if NO_COPY_HEADERS.contains(&key.as_str())
+            || (config.modify_envelope_header && key == "content-encoding")
         {
             continue;
         }
@@ -415,15 +411,24 @@ mod tests {
 
         assert!(res.is_ok());
         let req = res.unwrap();
-        assert!(!req.headers().contains_key("Content-Encoding"), "should be absent when envelope_header modification is on");
+        assert!(
+            !req.headers().contains_key("Content-Encoding"),
+            "should be absent when envelope_header modification is on"
+        );
 
-        let config = Arc::new(ConfigData { modify_envelope_header: false, ..ConfigData::default() });
+        let config = Arc::new(ConfigData {
+            modify_envelope_header: false,
+            ..ConfigData::default()
+        });
         let builder = make_outbound_request(&config, &uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
         let req = res.unwrap();
-        assert!(req.headers().contains_key("Content-Encoding"), "should be present when the body is unchanged.");
+        assert!(
+            req.headers().contains_key("Content-Encoding"),
+            "should be present when the body is unchanged."
+        );
     }
 
     #[test]
