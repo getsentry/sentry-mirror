@@ -139,7 +139,7 @@ where
         debug!("Creating outbound request for {0}", &outbound_host);
 
         let build_request_timer = Instant::now();
-        let request_builder = request::make_outbound_request(&uri, &headers, outbound_dsn);
+        let request_builder = request::make_outbound_request(&config, &uri, &headers, outbound_dsn);
 
         let body_out = if config.modify_envelope_header {
             match request::replace_envelope_dsn(&body_bytes, outbound_dsn) {

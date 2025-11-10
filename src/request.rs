@@ -16,17 +16,17 @@ use crate::config::ConfigData;
 use crate::dsn;
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
-const NO_COPY_HEADERS: [&str; 4] = [
+const NO_COPY_HEADERS: [&str; 3] = [
     "host",
     "x-forwarded-for",
     "content-length",
-    "content-encoding",
 ];
 
 /// Copy the relevant parts from `uri` and `headers` into a new request that can be sent
 /// to the outbound DSN. This function returns `RequestBuilder` because the body types
 /// are tedious to deal with.
 pub fn make_outbound_request(
+    config: &Arc<ConfigData>,
     uri: &Uri,
     headers: &HeaderMap,
     outbound: &dsn::Dsn,
@@ -60,7 +60,9 @@ pub fn make_outbound_request(
 
     let outbound_headers = builder.headers_mut().unwrap();
     for (key, value) in headers.iter() {
-        if NO_COPY_HEADERS.contains(&key.as_str()) {
+        if NO_COPY_HEADERS.contains(&key.as_str()) ||
+            (config.modify_envelope_header && key == "content-encoding")
+        {
             continue;
         }
         if key == dsn::AUTHORIZATION_HEADER || key == dsn::SENTRY_X_AUTH_HEADER {
@@ -258,6 +260,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_remove_proxy_headers() {
+        let config = Arc::new(ConfigData::default());
         let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -272,7 +275,7 @@ mod tests {
         headers.insert("X-Forwarded-For", "127.0.0.1".parse().unwrap());
         headers.insert("Content-Encoding", "gzip".parse().unwrap());
 
-        let builder = make_outbound_request(&uri, &headers, &outbound);
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -287,6 +290,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_sentry_auth_header() {
+        let config = Arc::new(ConfigData::default());
         let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -298,7 +302,7 @@ mod tests {
         headers.insert("Origin", "example.com".parse().unwrap());
         headers.insert("X-Sentry-Auth", "sentry_key=abcdef".parse().unwrap());
 
-        let builder = make_outbound_request(&uri, &headers, &outbound);
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -311,6 +315,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_authorization_header() {
+        let config = Arc::new(ConfigData::default());
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -325,7 +330,7 @@ mod tests {
             "sentry_version=7,sentry_key=abcdef".parse().unwrap(),
         );
 
-        let builder = make_outbound_request(&uri, &headers, &outbound);
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -341,6 +346,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_query_key() {
+        let config = Arc::new(ConfigData::default());
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -350,7 +356,7 @@ mod tests {
                 .unwrap();
 
         let headers = HeaderMap::new();
-        let builder = make_outbound_request(&uri, &headers, &outbound);
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
         let res = builder.body("");
         assert!(res.is_ok());
         let req = res.unwrap();
@@ -364,6 +370,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_path_host_and_scheme() {
+        let config = Arc::new(ConfigData::default());
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -379,13 +386,44 @@ mod tests {
             "sentry_version=7,sentry_key=abcdef".parse().unwrap(),
         );
 
-        let builder = make_outbound_request(&uri, &headers, &outbound);
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
         let res = builder.body("");
         assert!(res.is_ok());
         let req = res.unwrap();
 
         let uri = req.uri();
         assert_eq!(uri, "https://o789.ingest.sentry.io/api/6789/envelope/");
+    }
+
+    #[test]
+    fn make_outbound_request_content_encoding_header() {
+        let config = Arc::new(ConfigData::default());
+        let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+        let uri: Uri = "https://o123.ingest.sentry.io/api/1/envelope/"
+            .parse()
+            .unwrap();
+
+        let mut headers = HeaderMap::new();
+        headers.insert("Origin", "example.com".parse().unwrap());
+        headers.insert("X-Sentry-Auth", "sentry_key=abcdef".parse().unwrap());
+        headers.insert("Content-Encoding", "br".parse().unwrap());
+
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let res = builder.body("");
+
+        assert!(res.is_ok());
+        let req = res.unwrap();
+        assert!(!req.headers().contains_key("Content-Encoding"), "should be absent when envelope_header modification is on");
+
+        let config = Arc::new(ConfigData { modify_envelope_header: false, ..ConfigData::default() });
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let res = builder.body("");
+
+        assert!(res.is_ok());
+        let req = res.unwrap();
+        assert!(req.headers().contains_key("Content-Encoding"), "should be present when the body is unchanged.");
     }
 
     #[test]
