@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes};
-use hyper::{HeaderMap, Method, StatusCode};
+use hyper::{Method, StatusCode};
 use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
 
@@ -120,7 +120,7 @@ where
         }
     };
 
-    let body_bytes = match read_and_decode_body(&config, req, &headers, &public_key).await {
+    let body_bytes = match request::read_and_decode_body(&config, req, &headers, &public_key).await {
         Ok(body) => body,
         Err(_) => return Ok(bad_request_response()),
     };
@@ -211,60 +211,6 @@ where
     .increment(1);
 
     Ok(response_builder.body(full(resp_body)).unwrap())
-}
-
-async fn read_and_decode_body<B: Body>(
-    config: &Arc<ConfigData>,
-    request: Request<B>,
-    headers: &HeaderMap,
-    public_key: &String,
-) -> Result<Bytes, String>
-where
-    B::Error: std::error::Error + Sync + Send + 'static,
-{
-    let body_read_timer = Instant::now();
-    let body_res = request.collect().await;
-    if let Err(err) = body_res {
-        warn!("Could not read request body {:?}", err);
-        return Err("could not read request body".to_string())
-    }
-    let mut body_bytes = body_res.unwrap().to_bytes();
-
-    metrics::histogram!("handle_proxy.body_read.duration", "inbound_key" => public_key.clone())
-        .record(body_read_timer.elapsed());
-    metrics::histogram!("handle_proxy.body_bytes", "inbound_key" => public_key.clone())
-        .record(body_bytes.len() as f64);
-
-    if config.verbose {
-        let body_str = str::from_utf8(&body_bytes).unwrap_or("<binary data>");
-        debug!("Request Body: {}", body_str);
-    }
-
-    // Bodies can be compressed. If relay is configured to be more permissive
-    // we don't have to decompress and rewrite the body.
-    if config.modify_envelope_header && headers.contains_key("content-encoding") {
-        let request_encoding = headers.get("content-encoding").unwrap();
-        let decode_body_time = Instant::now();
-        body_bytes = match request::decode_body(request_encoding, &body_bytes) {
-            Ok(decompressed) => {
-                metrics::histogram!("handle_proxy.decode_body.duration")
-                    .record(decode_body_time.elapsed());
-                decompressed
-            }
-            Err(e) => {
-                metrics::counter!(
-                    "handle_proxy.decode_error",
-                    "inbound_key" => public_key.clone(),
-                )
-                .increment(1);
-                warn!("Could not decode request body: {0:?}", e);
-
-                return Err("could not decode request body".to_string())
-            }
-        }
-    }
-
-    Ok(body_bytes)
 }
 
 fn bad_request_response() -> Response<BoxBody> {

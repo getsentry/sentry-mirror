@@ -1,5 +1,6 @@
 use flate2::read::{DeflateDecoder, GzDecoder};
-use hyper::body::Bytes;
+use http_body_util::BodyExt;
+use hyper::body::{Body, Bytes};
 use hyper::header::HeaderValue;
 use hyper::http::request::Builder as RequestBuilder;
 use hyper::http::uri::PathAndQuery;
@@ -7,8 +8,11 @@ use hyper::{HeaderMap, Request, Uri};
 use regex::Regex;
 use serde_json::Value;
 use std::io::prelude::*;
-use tracing::warn;
+use std::sync::Arc;
+use std::time::Instant;
+use tracing::{debug, warn};
 
+use crate::config::ConfigData;
 use crate::dsn;
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
@@ -128,6 +132,60 @@ fn replace_public_key(target: &str, outbound: &dsn::Dsn) -> String {
     res.into_owned()
 }
 
+pub async fn read_and_decode_body<B: Body>(
+    config: &Arc<ConfigData>,
+    request: Request<B>,
+    headers: &HeaderMap,
+    public_key: &String,
+) -> Result<Bytes, String>
+where
+    B::Error: std::error::Error + Sync + Send + 'static,
+{
+    let body_read_timer = Instant::now();
+    let body_res = request.collect().await;
+    if let Err(err) = body_res {
+        warn!("Could not read request body {:?}", err);
+        return Err("could not read request body".to_string())
+    }
+    let mut body_bytes = body_res.unwrap().to_bytes();
+
+    metrics::histogram!("handle_proxy.body_read.duration", "inbound_key" => public_key.clone())
+        .record(body_read_timer.elapsed());
+    metrics::histogram!("handle_proxy.body_bytes", "inbound_key" => public_key.clone())
+        .record(body_bytes.len() as f64);
+
+    if config.verbose {
+        let body_str = str::from_utf8(&body_bytes).unwrap_or("<binary data>");
+        debug!("Request Body: {}", body_str);
+    }
+
+    // Bodies can be compressed. If relay is configured to be more permissive
+    // we don't have to decompress and rewrite the body.
+    if config.modify_envelope_header && headers.contains_key("content-encoding") {
+        let request_encoding = headers.get("content-encoding").unwrap();
+        let decode_body_time = Instant::now();
+        body_bytes = match decode_body(request_encoding, &body_bytes) {
+            Ok(decompressed) => {
+                metrics::histogram!("handle_proxy.decode_body.duration")
+                    .record(decode_body_time.elapsed());
+                decompressed
+            }
+            Err(e) => {
+                metrics::counter!(
+                    "handle_proxy.decode_error",
+                    "inbound_key" => public_key.clone(),
+                )
+                .increment(1);
+                warn!("Could not decode request body: {0:?}", e);
+
+                return Err("could not decode request body".to_string())
+            }
+        }
+    }
+
+    Ok(body_bytes)
+}
+
 #[derive(Debug)]
 pub enum BodyError {
     UnsupportedCodec,
@@ -194,6 +252,7 @@ mod tests {
         Compression,
         read::{DeflateEncoder, GzEncoder},
     };
+    use http_body_util::Full;
 
     use super::*;
 
@@ -508,9 +567,66 @@ mod tests {
         assert!(res.is_err());
     }
 
+    #[tokio::test]
+    async fn test_read_and_decode_body() {
+        let config = Arc::new(make_test_config());
+        assert!(config.modify_envelope_header, "Should default to true");
+
+        let contents = b"some content to be compressed";
+        let mut encoder = DeflateEncoder::new(&contents[..], Compression::fast());
+        let mut buffer_out = Vec::new();
+        encoder.read_to_end(&mut buffer_out).unwrap();
+
+        let bytes = Bytes::from(buffer_out);
+        let builder = Request::builder()
+            .method("POST")
+            .header("Content-Encoding", "deflate")
+            .uri("http://localhost:3000/store");
+        let request = builder.body(Full::new(bytes)).unwrap();
+        let headers = request.headers().clone();
+        let public_key = "deadbeef".to_string();
+        let result = read_and_decode_body(&config, request, &headers, &public_key).await;
+
+        assert!(result.is_ok());
+        let new_bytes = result.unwrap();
+        assert_eq!(new_bytes.to_vec(), b"some content to be compressed");
+    }
+
+    #[tokio::test]
+    async fn test_read_and_decode_body_decode_disabled() {
+        let mut config = make_test_config();
+        config.modify_envelope_header = false;
+        let config = Arc::new(config);
+
+        let contents = b"some content to be compressed";
+        let mut encoder = DeflateEncoder::new(&contents[..], Compression::fast());
+        let mut buffer_out = Vec::new();
+        encoder.read_to_end(&mut buffer_out).unwrap();
+
+        let bytes = Bytes::from(buffer_out);
+        let expected_bytes = bytes.clone();
+        let builder = Request::builder()
+            .method("POST")
+            .header("Content-Encoding", "deflate")
+            .uri("http://localhost:3000/store");
+        let request = builder.body(Full::new(bytes)).unwrap();
+        let headers = request.headers().clone();
+        let public_key = "deadbeef".to_string();
+        let result = read_and_decode_body(&config, request, &headers, &public_key).await;
+
+        assert!(result.is_ok());
+        let new_bytes = result.unwrap();
+        assert_eq!(new_bytes.to_vec(), expected_bytes.to_vec());
+        assert_ne!(new_bytes.to_vec(), b"some content to be compressed");
+    }
+
     fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
         let joined = lines.join("\n");
 
         Bytes::from(joined)
+    }
+
+    fn make_test_config() -> ConfigData {
+        ConfigData::default()
     }
 }
