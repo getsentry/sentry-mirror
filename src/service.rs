@@ -120,7 +120,8 @@ where
         }
     };
 
-    let body_bytes = match request::read_and_decode_body(&config, req, &headers, &public_key).await {
+    let body_bytes = match request::read_and_decode_body(&config, req, &headers, &public_key).await
+    {
         Ok(body) => body,
         Err(_) => return Ok(bad_request_response()),
     };

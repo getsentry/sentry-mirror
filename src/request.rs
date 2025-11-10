@@ -145,7 +145,7 @@ where
     let body_res = request.collect().await;
     if let Err(err) = body_res {
         warn!("Could not read request body {:?}", err);
-        return Err("could not read request body".to_string())
+        return Err("could not read request body".to_string());
     }
     let mut body_bytes = body_res.unwrap().to_bytes();
 
@@ -178,7 +178,7 @@ where
                 .increment(1);
                 warn!("Could not decode request body: {0:?}", e);
 
-                return Err("could not decode request body".to_string())
+                return Err("could not decode request body".to_string());
             }
         }
     }
