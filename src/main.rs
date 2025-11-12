@@ -50,7 +50,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = TcpListener::bind(addr).await?;
 
     let state = Arc::new(AppState::from_config(configdata));
-    // let keymap = Arc::new(dsn::make_key_map(configdata.keys.clone()));
 
     if state.config.verbose {
         debug!("DSN configuration");
