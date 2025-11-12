@@ -11,12 +11,15 @@ use hyper_util::{client::legacy::Client, rt::{TokioExecutor, TokioIo}};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
+use crate::state::AppState;
+
 mod config;
 mod dsn;
 mod logging;
 mod metrics;
 mod request;
 mod service;
+mod state;
 
 #[derive(Parser, Debug)]
 struct Args {
@@ -38,7 +41,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     println!("configuration file: {0}", args.config);
 
     // Parse the configuration file
-    let configdata = Arc::new(config::from_args(&args)?);
+    let configdata = config::from_args(&args)?;
 
     // Initialize metrics and logging
     metrics::init(metrics::MetricsConfig::from_config(&configdata));
@@ -48,31 +51,25 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     info!("Listening on {addr}");
     let listener = TcpListener::bind(addr).await?;
 
-    // Create a map of inbound -> outbound keys for simpler lookups.
-    let keymap = Arc::new(dsn::make_key_map(configdata.keys.clone()));
+    let state = Arc::new(AppState::from_config(configdata));
+    // let keymap = Arc::new(dsn::make_key_map(configdata.keys.clone()));
 
-    if configdata.verbose {
+    if state.config.verbose {
         debug!("DSN configuration");
-        debug!("{}", dsn::format_key_map(&keymap));
+        debug!("{}", dsn::format_key_map(&state.keymap));
     }
-
-    let https = HttpsConnector::new();
-    let arc_client = Arc::new(Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https));
 
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
-        let keymap_loop = keymap.clone();
-        let configdata_loop = configdata.clone();
-        let client_loop = arc_client.clone();
+        let state_loop = state.clone();
 
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
                 .serve_connection(
                     io,
                     service_fn(move |req: Request<Incoming>| {
-                        let config_loop = configdata_loop.clone();
-                        service::handle_request(req, config_loop.clone(), keymap_loop.clone(), client_loop.clone())
+                        service::handle_request(req, state_loop.clone())
                     }),
                 )
                 .await
