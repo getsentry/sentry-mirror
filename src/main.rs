@@ -1,11 +1,13 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use hyper::Request;
+use http_body_util::Full;
+use hyper::{body::Bytes, Request};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper_util::rt::TokioIo;
+use hyper_tls::HttpsConnector;
+use hyper_util::{client::legacy::Client, rt::{TokioExecutor, TokioIo}};
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 
@@ -54,11 +56,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         debug!("{}", dsn::format_key_map(&keymap));
     }
 
+    let https = HttpsConnector::new();
+    let arc_client = Arc::new(Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https));
+
     loop {
         let (stream, _) = listener.accept().await?;
         let io = TokioIo::new(stream);
         let keymap_loop = keymap.clone();
         let configdata_loop = configdata.clone();
+        let client_loop = arc_client.clone();
 
         tokio::task::spawn(async move {
             if let Err(err) = http1::Builder::new()
@@ -66,7 +72,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                     io,
                     service_fn(move |req: Request<Incoming>| {
                         let config_loop = configdata_loop.clone();
-                        service::handle_request(req, config_loop.clone(), keymap_loop.clone())
+                        service::handle_request(req, config_loop.clone(), keymap_loop.clone(), client_loop.clone())
                     }),
                 )
                 .await

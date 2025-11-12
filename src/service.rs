@@ -1,4 +1,5 @@
 use futures::future::join_all;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::{Client, ResponseFuture};
 use hyper_util::rt::TokioExecutor;
 use std::time::Instant;
@@ -9,7 +10,7 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes};
 use hyper::{Method, StatusCode};
 use hyper::{Request, Response};
-use hyper_tls::HttpsConnector;
+use hyper_tls::{HttpsConnecting, HttpsConnector};
 
 use crate::config::ConfigData;
 use crate::dsn;
@@ -23,6 +24,7 @@ pub async fn handle_request<B: Body>(
     req: Request<B>,
     config: Arc<ConfigData>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
+    client: Arc<Client<HttpsConnector<HttpConnector>, Full<Bytes>>>,
 ) -> HandlerResult<Response<BoxBody>>
 where
     B::Error: std::error::Error + Sync + Send + 'static,
@@ -35,7 +37,7 @@ where
     if method == Method::GET && path == "/health" {
         handle_health(req)
     } else {
-        let res = handle_proxy(req, config, keymap).await;
+        let res = handle_proxy(req, config, keymap, client).await;
         metrics::histogram!("handle_proxy.duration").record(request_timer.elapsed());
 
         res
@@ -53,6 +55,7 @@ pub async fn handle_proxy<B: Body>(
     req: Request<B>,
     config: Arc<ConfigData>,
     keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
+    client: Arc<Client<HttpsConnector<HttpConnector>, Full<Bytes>>>,
 ) -> HandlerResult<Response<BoxBody>>
 where
     B::Error: std::error::Error + Sync + Send + 'static,
@@ -158,7 +161,7 @@ where
         .record(build_request_timer.elapsed());
 
         if let Ok(outbound_request) = request {
-            let fut_res = send_request(outbound_request, outbound_host.clone());
+            let fut_res = send_request(&client, outbound_request, outbound_host.clone());
             responses.push(fut_res);
         } else {
             warn!("Could not build request {0:?}", request.err());
@@ -229,11 +232,12 @@ fn full<T: Into<Bytes>>(chunk: T) -> BoxBody {
 
 /// Send a request to its destination async
 async fn send_request(
+    client: &Arc<Client<HttpsConnector<HttpConnector>, Full<Bytes>>>,
     req: Request<Full<Bytes>>,
     request_host: String,
 ) -> (ResponseFuture, String, Instant) {
-    let https = HttpsConnector::new();
-    let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
+    // let https = HttpsConnector::new();
+    // let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
 
     (client.request(req), request_host, Instant::now())
 }
