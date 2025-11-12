@@ -17,6 +17,7 @@ use crate::dsn;
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
 const NO_COPY_HEADERS: [&str; 3] = ["host", "x-forwarded-for", "content-length"];
+const INGEST_PATH_SEGMENTS: [&str; 3] = ["envelope", "store", "integration"];
 
 /// Copy the relevant parts from `uri` and `headers` into a new request that can be sent
 /// to the outbound DSN. This function returns `RequestBuilder` because the body types
@@ -30,7 +31,10 @@ pub fn make_outbound_request(
     // Update project id in the path
     let mut new_path = uri.path().to_string();
     let path_parts: Vec<_> = uri.path().split('/').filter(|i| !i.is_empty()).collect();
-    if path_parts.len() == 3 && path_parts[0] == "api" {
+    if path_parts.len() >= 3
+        && path_parts[0] == "api"
+        && INGEST_PATH_SEGMENTS.contains(&path_parts[2])
+    {
         let original_projectid = path_parts[1];
         let new_project_id = outbound.project_id.clone();
         new_path = new_path.replace(original_projectid, &new_project_id);
@@ -389,6 +393,29 @@ mod tests {
 
         let uri = req.uri();
         assert_eq!(uri, "https://o789.ingest.sentry.io/api/6789/envelope/");
+    }
+
+    #[test]
+    fn make_outbound_request_replace_project_id_oltp_url() {
+        let config = Arc::new(ConfigData::default());
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+        let uri: Uri = "https://o123.ingest.sentry.io/api/123/integration/oltp/v1/traces/"
+            .parse()
+            .unwrap();
+
+        let headers = HeaderMap::new();
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let res = builder.body("");
+
+        assert!(res.is_ok());
+        let req = res.unwrap();
+        let uri = req.uri();
+        assert_eq!(
+            uri,
+            "https://o789.ingest.sentry.io/api/6789/integration/oltp/v1/traces/"
+        );
     }
 
     #[test]
