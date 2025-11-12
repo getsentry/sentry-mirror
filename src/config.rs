@@ -57,6 +57,12 @@ pub struct ConfigData {
 
     /// A list of keypairs that the server will handle.
     pub keys: Vec<KeyRing>,
+
+    /// Set to false to skip rewriting envelope headers.
+    /// Disaling envelope header modification makes mirroring more efficient,
+    /// but requires the downstream relay to not be validating projectids/dsns in the envelope
+    /// headers.
+    pub modify_envelope_header: bool,
 }
 
 impl ConfigData {
@@ -83,6 +89,7 @@ impl Default for ConfigData {
             port: 3000,
             verbose: false,
             keys: vec![],
+            modify_envelope_header: true,
         }
     }
 }

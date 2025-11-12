@@ -120,41 +120,11 @@ where
         }
     };
 
-    let body_read_timer = Instant::now();
-    let mut body_bytes = req.collect().await?.to_bytes();
-
-    metrics::histogram!("handle_proxy.body_read.duration", "inbound_key" => public_key.clone())
-        .record(body_read_timer.elapsed());
-    metrics::histogram!("handle_proxy.body_bytes", "inbound_key" => public_key.clone())
-        .record(body_bytes.len() as f64);
-
-    if config.verbose {
-        let body_str = str::from_utf8(&body_bytes).unwrap_or("<binary data>");
-        debug!("Request Body: {}", body_str);
-    }
-
-    // Bodies can be compressed
-    if headers.contains_key("content-encoding") {
-        let request_encoding = headers.get("content-encoding").unwrap();
-        let decode_body_time = Instant::now();
-        body_bytes = match request::decode_body(request_encoding, &body_bytes) {
-            Ok(decompressed) => {
-                metrics::histogram!("handle_proxy.decode_body.duration")
-                    .record(decode_body_time.elapsed());
-                decompressed
-            }
-            Err(e) => {
-                metrics::counter!(
-                    "handle_proxy.decode_error",
-                    "inbound_key" => public_key.clone(),
-                )
-                .increment(1);
-                warn!("Could not decode request body: {0:?}", e);
-
-                return Ok(bad_request_response());
-            }
-        }
-    }
+    let body_bytes = match request::read_and_decode_body(&config, req, &headers, &public_key).await
+    {
+        Ok(body) => body,
+        Err(_) => return Ok(bad_request_response()),
+    };
 
     // We'll race requests to the outbound DSN's and once all requests are complete
     // we use the body of the first response
@@ -169,11 +139,17 @@ where
         debug!("Creating outbound request for {0}", &outbound_host);
 
         let build_request_timer = Instant::now();
-        let request_builder = request::make_outbound_request(&uri, &headers, outbound_dsn);
-        let body_out = match request::replace_envelope_dsn(&body_bytes, outbound_dsn) {
-            Some(new_body) => new_body,
-            None => body_bytes.clone(),
+        let request_builder = request::make_outbound_request(&config, &uri, &headers, outbound_dsn);
+
+        let body_out = if config.modify_envelope_header {
+            match request::replace_envelope_dsn(&body_bytes, outbound_dsn) {
+                Some(new_body) => new_body,
+                None => body_bytes.clone(),
+            }
+        } else {
+            body_bytes.clone()
         };
+
         let request = request_builder.body(Full::new(body_out));
         metrics::histogram!(
             "handle_proxy.build_request.duration",
@@ -318,6 +294,7 @@ mod tests {
                     )],
                 },
             ],
+            modify_envelope_header: true,
         };
 
         Arc::new(config)
