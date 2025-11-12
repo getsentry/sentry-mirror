@@ -3,9 +3,15 @@ use std::collections::HashMap;
 use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper_tls::HttpsConnector;
-use hyper_util::{client::legacy::{connect::HttpConnector, Client}, rt::TokioExecutor};
+use hyper_util::{
+    client::legacy::{Client, connect::HttpConnector},
+    rt::TokioExecutor,
+};
 
-use crate::{config::ConfigData, dsn::{self, DsnKeyRing}};
+use crate::{
+    config::ConfigData,
+    dsn::{self, DsnKeyRing},
+};
 
 /// Container for application state.
 /// Generally wrapped in an Arc and shared across requests.

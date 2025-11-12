@@ -1,13 +1,11 @@
 use std::sync::Arc;
 
 use clap::Parser;
-use http_body_util::Full;
-use hyper::{body::Bytes, Request};
 use hyper::body::Incoming;
 use hyper::server::conn::http1;
 use hyper::service::service_fn;
-use hyper_tls::HttpsConnector;
-use hyper_util::{client::legacy::Client, rt::{TokioExecutor, TokioIo}};
+use hyper::Request;
+use hyper_util::rt::TokioIo;
 use tokio::net::TcpListener;
 use tracing::{debug, error, info};
 

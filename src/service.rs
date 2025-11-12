@@ -1,18 +1,16 @@
 use futures::future::join_all;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::{Client, ResponseFuture};
-use hyper_util::rt::TokioExecutor;
 use std::time::Instant;
-use std::{collections::HashMap, sync::Arc};
+use std::sync::Arc;
 use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes};
 use hyper::{Method, StatusCode};
 use hyper::{Request, Response};
-use hyper_tls::{HttpsConnecting, HttpsConnector};
+use hyper_tls::HttpsConnector;
 
-use crate::config::ConfigData;
 use crate::dsn;
 use crate::request;
 use crate::state::AppState;
@@ -23,7 +21,7 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
 pub async fn handle_request<B: Body>(
     req: Request<B>,
-    state: Arc<AppState>
+    state: Arc<AppState>,
 ) -> HandlerResult<Response<BoxBody>>
 where
     B::Error: std::error::Error + Sync + Send + 'static,
@@ -50,7 +48,10 @@ pub fn handle_health(_req: Request<impl Body>) -> HandlerResult<Response<BoxBody
         .unwrap())
 }
 
-pub async fn handle_proxy<B: Body>(req: Request<B>, state: Arc<AppState>) -> HandlerResult<Response<BoxBody>>
+pub async fn handle_proxy<B: Body>(
+    req: Request<B>,
+    state: Arc<AppState>,
+) -> HandlerResult<Response<BoxBody>>
 where
     B::Error: std::error::Error + Sync + Send + 'static,
 {
@@ -117,11 +118,11 @@ where
         }
     };
 
-    let body_bytes = match request::read_and_decode_body(&state.config, req, &headers, &public_key).await
-    {
-        Ok(body) => body,
-        Err(_) => return Ok(bad_request_response()),
-    };
+    let body_bytes =
+        match request::read_and_decode_body(&state.config, req, &headers, &public_key).await {
+            Ok(body) => body,
+            Err(_) => return Ok(bad_request_response()),
+        };
 
     // We'll race requests to the outbound DSN's and once all requests are complete
     // we use the body of the first response
@@ -136,7 +137,8 @@ where
         debug!("Creating outbound request for {0}", &outbound_host);
 
         let build_request_timer = Instant::now();
-        let request_builder = request::make_outbound_request(&state.config, &uri, &headers, outbound_dsn);
+        let request_builder =
+            request::make_outbound_request(&state.config, &uri, &headers, outbound_dsn);
 
         let body_out = if state.config.modify_envelope_header {
             match request::replace_envelope_dsn(&body_bytes, outbound_dsn) {
@@ -240,13 +242,16 @@ mod tests {
     use super::{full, handle_request};
     use crate::{
         config::{ConfigData, KeyRing},
-        logging::LogFormat, state::AppState,
+        logging::LogFormat,
+        state::AppState,
     };
     use http_body_util::{BodyExt, combinators::BoxBody};
     use hyper::{Request, Response, StatusCode, body::Bytes};
 
     fn make_test_config() -> ConfigData {
-        let config = ConfigData {
+        
+
+        ConfigData {
             sentry_dsn: None,
             sentry_env: None,
             traces_sample_rate: None,
@@ -284,9 +289,7 @@ mod tests {
                 },
             ],
             modify_envelope_header: true,
-        };
-
-        config
+        }
     }
 
     fn make_app_state() -> Arc<AppState> {
