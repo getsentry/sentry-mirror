@@ -1,8 +1,8 @@
 use futures::future::join_all;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::{Client, ResponseFuture};
-use std::time::Instant;
 use std::sync::Arc;
+use std::time::Instant;
 use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
@@ -249,8 +249,6 @@ mod tests {
     use hyper::{Request, Response, StatusCode, body::Bytes};
 
     fn make_test_config() -> ConfigData {
-        
-
         ConfigData {
             sentry_dsn: None,
             sentry_env: None,
