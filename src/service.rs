@@ -1,8 +1,8 @@
 use futures::future::join_all;
+use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::{Client, ResponseFuture};
-use hyper_util::rt::TokioExecutor;
+use std::sync::Arc;
 use std::time::Instant;
-use std::{collections::HashMap, sync::Arc};
 use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
@@ -11,9 +11,9 @@ use hyper::{Method, StatusCode};
 use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
 
-use crate::config::ConfigData;
 use crate::dsn;
 use crate::request;
+use crate::state::AppState;
 
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
 type HandlerResult<T> = std::result::Result<T, GenericError>;
@@ -21,8 +21,7 @@ type BoxBody = http_body_util::combinators::BoxBody<Bytes, hyper::Error>;
 
 pub async fn handle_request<B: Body>(
     req: Request<B>,
-    config: Arc<ConfigData>,
-    keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
+    state: Arc<AppState>,
 ) -> HandlerResult<Response<BoxBody>>
 where
     B::Error: std::error::Error + Sync + Send + 'static,
@@ -35,7 +34,7 @@ where
     if method == Method::GET && path == "/health" {
         handle_health(req)
     } else {
-        let res = handle_proxy(req, config, keymap).await;
+        let res = handle_proxy(req, state).await;
         metrics::histogram!("handle_proxy.duration").record(request_timer.elapsed());
 
         res
@@ -51,8 +50,7 @@ pub fn handle_health(_req: Request<impl Body>) -> HandlerResult<Response<BoxBody
 
 pub async fn handle_proxy<B: Body>(
     req: Request<B>,
-    config: Arc<ConfigData>,
-    keymap: Arc<HashMap<String, dsn::DsnKeyRing>>,
+    state: Arc<AppState>,
 ) -> HandlerResult<Response<BoxBody>>
 where
     B::Error: std::error::Error + Sync + Send + 'static,
@@ -62,7 +60,7 @@ where
     let path = uri.path();
     let headers = req.headers().clone();
 
-    if config.verbose {
+    if state.config.verbose {
         let formatted_headers = headers
             .iter()
             .map(|(key, value)| {
@@ -102,7 +100,7 @@ where
     }
     // Match the public key with registered keys
     let public_key = found_dsn.unwrap();
-    let keyring = match keymap.get(&public_key) {
+    let keyring = match state.keymap.get(&public_key) {
         Some(v) => v,
         // If a DSN cannot be found -> empty response
         None => {
@@ -120,11 +118,11 @@ where
         }
     };
 
-    let body_bytes = match request::read_and_decode_body(&config, req, &headers, &public_key).await
-    {
-        Ok(body) => body,
-        Err(_) => return Ok(bad_request_response()),
-    };
+    let body_bytes =
+        match request::read_and_decode_body(&state.config, req, &headers, &public_key).await {
+            Ok(body) => body,
+            Err(_) => return Ok(bad_request_response()),
+        };
 
     // We'll race requests to the outbound DSN's and once all requests are complete
     // we use the body of the first response
@@ -139,9 +137,10 @@ where
         debug!("Creating outbound request for {0}", &outbound_host);
 
         let build_request_timer = Instant::now();
-        let request_builder = request::make_outbound_request(&config, &uri, &headers, outbound_dsn);
+        let request_builder =
+            request::make_outbound_request(&state.config, &uri, &headers, outbound_dsn);
 
-        let body_out = if config.modify_envelope_header {
+        let body_out = if state.config.modify_envelope_header {
             match request::replace_envelope_dsn(&body_bytes, outbound_dsn) {
                 Some(new_body) => new_body,
                 None => body_bytes.clone(),
@@ -158,7 +157,7 @@ where
         .record(build_request_timer.elapsed());
 
         if let Ok(outbound_request) = request {
-            let fut_res = send_request(outbound_request, outbound_host.clone());
+            let fut_res = send_request(&state.client, outbound_request, outbound_host.clone());
             responses.push(fut_res);
         } else {
             warn!("Could not build request {0:?}", request.err());
@@ -229,35 +228,28 @@ fn full<T: Into<Bytes>>(chunk: T) -> BoxBody {
 
 /// Send a request to its destination async
 async fn send_request(
+    client: &Client<HttpsConnector<HttpConnector>, Full<Bytes>>,
     req: Request<Full<Bytes>>,
     request_host: String,
 ) -> (ResponseFuture, String, Instant) {
-    let https = HttpsConnector::new();
-    let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
-
     (client.request(req), request_host, Instant::now())
 }
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::HashMap, sync::Arc};
+    use std::sync::Arc;
 
     use super::{full, handle_request};
     use crate::{
         config::{ConfigData, KeyRing},
-        dsn::{DsnKeyRing, make_key_map},
         logging::LogFormat,
+        state::AppState,
     };
     use http_body_util::{BodyExt, combinators::BoxBody};
     use hyper::{Request, Response, StatusCode, body::Bytes};
 
-    fn make_test_keymap(config: &Arc<ConfigData>) -> Arc<HashMap<String, DsnKeyRing>> {
-        let keymap = make_key_map(config.keys.clone());
-        Arc::new(keymap)
-    }
-
-    fn make_test_config() -> Arc<ConfigData> {
-        let config = ConfigData {
+    fn make_test_config() -> ConfigData {
+        ConfigData {
             sentry_dsn: None,
             sentry_env: None,
             traces_sample_rate: None,
@@ -295,9 +287,13 @@ mod tests {
                 },
             ],
             modify_envelope_header: true,
-        };
+        }
+    }
 
-        Arc::new(config)
+    fn make_app_state() -> Arc<AppState> {
+        let config = make_test_config();
+        let state = AppState::from_config(config);
+        Arc::new(state)
     }
 
     async fn extract_body(response: Response<BoxBody<Bytes, hyper::Error>>) -> String {
@@ -308,13 +304,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_request_health() {
-        let config = make_test_config();
-        let keymap = make_test_keymap(&config);
+        let state = make_app_state();
         let builder = Request::builder()
             .method("GET")
             .uri("http://example.com/health");
         let request = builder.body(full("")).unwrap();
-        let response_res = handle_request(request, config, keymap).await;
+        let response_res = handle_request(request, state).await;
 
         assert!(response_res.is_ok());
         let response = response_res.unwrap();
@@ -325,13 +320,12 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_request_proxy_incorrect_method() {
-        let config = make_test_config();
-        let keymap = make_test_keymap(&config);
+        let state = make_app_state();
         let builder = Request::builder()
             .method("GET")
             .uri("http://localhost:3000/store");
         let request = builder.body(full("")).unwrap();
-        let response_res = handle_request(request, config, keymap).await;
+        let response_res = handle_request(request, state).await;
 
         assert!(response_res.is_ok());
         let response = response_res.unwrap();
@@ -343,14 +337,13 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_proxy_no_dsn() {
-        let config = make_test_config();
-        let keymap = make_test_keymap(&config);
+        let state = make_app_state();
         let builder = Request::builder()
             .method("POST")
             .uri("http://localhost:3000/store");
 
         let request = builder.body(full("")).unwrap();
-        let response_res = handle_request(request, config, keymap).await;
+        let response_res = handle_request(request, state).await;
 
         assert!(response_res.is_ok());
         let response = response_res.unwrap();
@@ -362,15 +355,14 @@ mod tests {
 
     #[tokio::test]
     async fn test_handle_proxy_incorrect_dsn() {
-        let config = make_test_config();
-        let keymap = make_test_keymap(&config);
+        let state = make_app_state();
         let builder = Request::builder()
             .method("POST")
             .header("Authorization", "sentry_key=not-there")
             .uri("http://localhost:3000/store");
 
         let request = builder.body(full("")).unwrap();
-        let response_res = handle_request(request, config, keymap).await;
+        let response_res = handle_request(request, state).await;
 
         assert!(response_res.is_ok());
         let response = response_res.unwrap();

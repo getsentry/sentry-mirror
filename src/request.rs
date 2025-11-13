@@ -8,7 +8,6 @@ use hyper::{HeaderMap, Request, Uri};
 use regex::Regex;
 use serde_json::Value;
 use std::io::prelude::*;
-use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, warn};
 
@@ -23,7 +22,7 @@ const INGEST_PATH_SEGMENTS: [&str; 3] = ["envelope", "store", "integration"];
 /// to the outbound DSN. This function returns `RequestBuilder` because the body types
 /// are tedious to deal with.
 pub fn make_outbound_request(
-    config: &Arc<ConfigData>,
+    config: &ConfigData,
     uri: &Uri,
     headers: &HeaderMap,
     outbound: &dsn::Dsn,
@@ -135,7 +134,7 @@ fn replace_public_key(target: &str, outbound: &dsn::Dsn) -> String {
 }
 
 pub async fn read_and_decode_body<B: Body>(
-    config: &Arc<ConfigData>,
+    config: &ConfigData,
     request: Request<B>,
     headers: &HeaderMap,
     public_key: &str,
@@ -260,7 +259,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_remove_proxy_headers() {
-        let config = Arc::new(ConfigData::default());
+        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -290,7 +289,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_sentry_auth_header() {
-        let config = Arc::new(ConfigData::default());
+        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -315,7 +314,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_authorization_header() {
-        let config = Arc::new(ConfigData::default());
+        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -346,7 +345,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_query_key() {
-        let config = Arc::new(ConfigData::default());
+        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -370,7 +369,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_path_host_and_scheme() {
-        let config = Arc::new(ConfigData::default());
+        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -397,7 +396,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_project_id_oltp_url() {
-        let config = Arc::new(ConfigData::default());
+        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -420,7 +419,7 @@ mod tests {
 
     #[test]
     fn make_outbound_request_content_encoding_header() {
-        let config = Arc::new(ConfigData::default());
+        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -443,10 +442,10 @@ mod tests {
             "should be absent when envelope_header modification is on"
         );
 
-        let config = Arc::new(ConfigData {
+        let config = ConfigData {
             modify_envelope_header: false,
             ..ConfigData::default()
-        });
+        };
         let builder = make_outbound_request(&config, &uri, &headers, &outbound);
         let res = builder.body("");
 
@@ -639,7 +638,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_read_and_decode_body() {
-        let config = Arc::new(make_test_config());
+        let config = make_test_config();
         assert!(config.modify_envelope_header, "Should default to true");
 
         let contents = b"some content to be compressed";
@@ -666,7 +665,6 @@ mod tests {
     async fn test_read_and_decode_body_decode_disabled() {
         let mut config = make_test_config();
         config.modify_envelope_header = false;
-        let config = Arc::new(config);
 
         let contents = b"some content to be compressed";
         let mut encoder = DeflateEncoder::new(&contents[..], Compression::fast());
