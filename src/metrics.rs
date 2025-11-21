@@ -1,14 +1,12 @@
 use crate::config::ConfigData;
-use metrics_exporter_statsd::StatsdBuilder;
-use std::{
-    collections::BTreeMap,
-    net::{SocketAddr, ToSocketAddrs},
-};
+use metrics::Label;
+use metrics_exporter_dogstatsd::DogStatsDBuilder;
+use std::collections::BTreeMap;
 
 pub struct MetricsConfig {
     /// Metrics collector host/port.
     /// Recording metrics is optional
-    pub statsd_addr: Option<SocketAddr>,
+    pub statsd_addr: Option<String>,
 
     /// Map of default tags that should be applied to all metrics.
     pub default_tags: BTreeMap<String, String>,
@@ -16,20 +14,8 @@ pub struct MetricsConfig {
 
 impl MetricsConfig {
     pub fn from_config(config: &ConfigData) -> Self {
-        let statsd_addr = if let Some(statsd_addr) = config.statsd_addr.clone() {
-            let socket_addrs = statsd_addr
-                .to_socket_addrs()
-                .expect("Could not resolve into a socket address");
-            let [statsd_addr] = socket_addrs.as_slice() else {
-                unreachable!("Expect statsd_addr to resolve into a single socket address");
-            };
-            Some(*statsd_addr)
-        } else {
-            None
-        };
-
         MetricsConfig {
-            statsd_addr,
+            statsd_addr: config.statsd_addr.clone(),
             default_tags: config.default_metrics_tags.clone().unwrap_or_default(),
         }
     }
@@ -37,17 +23,17 @@ impl MetricsConfig {
 
 pub fn init(metrics_config: MetricsConfig) {
     if let Some(address) = metrics_config.statsd_addr {
-        let builder = StatsdBuilder::from(address.ip().to_string(), address.port());
+        let labels = metrics_config.default_tags.into_iter()
+            .map(|(key, value)| Label::new(key, value))
+            .collect();
 
-        let recorder = metrics_config
-            .default_tags
-            .into_iter()
-            .fold(
-                builder.with_queue_size(5000).with_buffer_size(1024),
-                |builder, (key, value)| builder.with_default_tag(key, value),
-            )
-            .build(Some("sentrymirror"))
-            .expect("Could not create StatsdRecorder");
+        let recorder = DogStatsDBuilder::default()
+            .with_remote_address(address)
+            .expect("Failed to parse metrics address")
+            .set_global_prefix("sentrymirror")
+            .with_global_labels(labels)
+            .build()
+            .expect("Could not create DogStatsD exporter");
 
         metrics::set_global_recorder(recorder).expect("Could not set global metrics recorder")
     }
