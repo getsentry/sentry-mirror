@@ -23,7 +23,9 @@ impl MetricsConfig {
 
 pub fn init(metrics_config: MetricsConfig) {
     if let Some(address) = metrics_config.statsd_addr {
-        let labels = metrics_config.default_tags.into_iter()
+        let labels = metrics_config
+            .default_tags
+            .into_iter()
             .map(|(key, value)| Label::new(key, value))
             .collect();
 
