@@ -19,6 +19,9 @@ mod request;
 mod service;
 mod state;
 
+#[global_allocator]
+static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
+
 #[derive(Parser, Debug)]
 struct Args {
     /// Path to the configuration file

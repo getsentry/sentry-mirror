@@ -28,3 +28,4 @@ figment = { version = "0.10.19", features = ["yaml", "test", "env"] }
 brotli = "8.0.2"
 zstd = "0.13.3"
 metrics-exporter-dogstatsd = "0.9.6"
+mimalloc = { version = "0.1.48", features = ["v3", "override"] }
