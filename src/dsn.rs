@@ -7,7 +7,7 @@ use hyper::{HeaderMap, Uri};
 use regex::Regex;
 use url::Url;
 
-use crate::config;
+use crate::config::{self, DataCategory, OutboundEntry};
 
 /// DSN components parsed from a DSN string
 #[derive(Debug, Clone, PartialEq)]
@@ -101,7 +101,13 @@ impl FromStr for Dsn {
 #[derive(Debug, PartialEq)]
 pub struct DsnKeyRing {
     pub inbound: Dsn,
-    pub outbound: Vec<Dsn>,
+    pub outbound: Vec<OutboundTarget>,
+}
+
+#[derive(Debug, PartialEq, Clone)]
+pub struct OutboundTarget {
+    pub dsn: Dsn,
+    pub categories: Option<Vec<DataCategory>>,
 }
 
 /// Convert a list of Config data keys into Dsn's that we can use
@@ -116,12 +122,17 @@ pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
         let outbound = item
             .outbound
             .iter()
-            .filter_map(|item| match item {
-                Some(i) => Some(i),
-                None => None,
+            .filter_map(|entry| match entry {
+                OutboundEntry::Dsn(opt) => opt.as_ref().map(|dsn_str| (dsn_str.clone(), None)),
+                OutboundEntry::Detailed { dsn, categories } => {
+                    dsn.as_ref().map(|dsn_str| (dsn_str.clone(), categories.clone()))
+                }
             })
-            .map(|outbound_str| outbound_str.parse::<Dsn>().expect("Invalid outbound DSN"))
-            .collect::<Vec<Dsn>>();
+            .map(|(outbound_str, categories)| {
+                let dsn = outbound_str.parse::<Dsn>().expect("Invalid outbound DSN");
+                OutboundTarget { dsn, categories }
+            })
+            .collect::<Vec<OutboundTarget>>();
         keymap.insert(
             inbound_dsn.key_id(),
             DsnKeyRing {
@@ -138,8 +149,8 @@ pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
     for (_, keyring) in keymap.iter() {
         out.push_str(format!("Inbound: {}\n", keyring.inbound).as_ref());
         out.push_str("Outbound:\n");
-        for outbound in keyring.outbound.iter() {
-            out.push_str(format!("- {}\n", outbound).as_ref());
+        for target in keyring.outbound.iter() {
+            out.push_str(format!("- {}\n", target.dsn).as_ref());
         }
     }
     out
@@ -180,7 +191,7 @@ pub fn from_request(uri: &Uri, headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::KeyRing;
+    use crate::config::{KeyRing, OutboundEntry};
 
     #[test]
     fn parse_from_string_valid() {
@@ -218,8 +229,8 @@ mod tests {
         let keys = vec![KeyRing {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
-                Some("https://ghijkl@sentry.io/567".to_string()),
-                Some("https://mnopq@sentry.io/890".to_string()),
+                OutboundEntry::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
+                OutboundEntry::Dsn(Some("https://mnopq@sentry.io/890".to_string())),
             ],
         }];
         let keymap = make_key_map(keys);
@@ -227,8 +238,8 @@ mod tests {
         let value = keymap.get("abcdef").expect("Should have a value");
         assert_eq!(value.inbound.public_key, "abcdef");
         assert_eq!(value.outbound.len(), 2);
-        assert_eq!(value.outbound[0].public_key, "ghijkl");
-        assert_eq!(value.outbound[1].public_key, "mnopq");
+        assert_eq!(value.outbound[0].dsn.public_key, "ghijkl");
+        assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
     }
 
     #[test]
@@ -320,8 +331,8 @@ mod tests {
         let keys = vec![KeyRing {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
-                Some("https://ghijkl@sentry.io/567".to_string()),
-                Some("https://mnopq@sentry.io/890".to_string()),
+                OutboundEntry::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
+                OutboundEntry::Dsn(Some("https://mnopq@sentry.io/890".to_string())),
             ],
         }];
         let key_map = make_key_map(keys);

@@ -19,8 +19,11 @@ port: 3000
 keys:
   - inbound: http://public-key@sentry-mirror.acme.org/1847101
     outbound:
+      # Shorthand form (no filtering, sends all categories):
       - https://public-key-red@o123.ingest.de.sentry.io/123456
-      - https://public-key-blue@o456.ingest.us.sentry.io/654321
+      # Detailed form with per-outbound category filtering:
+      - dsn: https://public-key-blue@o456.ingest.us.sentry.io/654321
+        categories: [errors, transactions, replays, metrics, profiling, minidumps]
 ```
 
 ## Request rewriting
@@ -45,6 +48,23 @@ sentry-mirror has been tested to work with the following data categories:
 - Metrics
 - Profiling
 - Minidumps
+
+## Per-outbound Category Filtering
+
+You can restrict which data types are forwarded to each outbound DSN by using the
+“detailed” outbound form in the configuration:
+
+```yaml
+keys:
+  - inbound: https://public-key@sentry-mirror.acme.org/1847101
+    outbound:
+      - dsn: https://red@o123.ingest.de.sentry.io/123456
+        categories: [errors, transactions]     # only send errors and transactions
+      - dsn: https://blue@o456.ingest.us.sentry.io/654321
+        categories: [replays, metrics, profiling, minidumps]
+```
+
+If categories are omitted (or the shorthand DSN string is used), all data types are forwarded.
 
 ## Unsupported Features
 

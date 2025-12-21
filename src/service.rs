@@ -9,11 +9,12 @@ use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes};
 use hyper::{Method, StatusCode};
 use hyper::{Request, Response};
-use hyper_tls::HttpsConnector;
+use hyper_rustls::HttpsConnector;
 
 use crate::dsn;
 use crate::request;
 use crate::state::AppState;
+use crate::config::DataCategory;
 
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
 type HandlerResult<T> = std::result::Result<T, GenericError>;
@@ -124,10 +125,24 @@ where
             Err(_) => return Ok(bad_request_response()),
         };
 
+    // Detect data category (best-effort). Fail-open if unknown.
+    let detected_category: Option<DataCategory> = request::detect_data_category(&uri, &body_bytes);
+
     // We'll race requests to the outbound DSN's and once all requests are complete
     // we use the body of the first response
     let mut responses = Vec::new();
-    for outbound_dsn in keyring.outbound.iter() {
+    for outbound_target in keyring.outbound.iter() {
+        // Apply per-outbound category filter if configured
+        if let Some(ref categories) = outbound_target.categories {
+            if let Some(ref cat) = detected_category {
+                if !categories.contains(cat) {
+                    // Skip this outbound if the category is not allowed
+                    continue;
+                }
+            }
+        }
+
+        let outbound_dsn = &outbound_target.dsn;
         let outbound_host = outbound_dsn.host.clone();
         metrics::counter!(
             "handle_proxy.outbound_request.start",
@@ -241,7 +256,7 @@ mod tests {
 
     use super::{full, handle_request};
     use crate::{
-        config::{ConfigData, KeyRing},
+        config::{ConfigData, KeyRing, OutboundEntry},
         logging::LogFormat,
         state::AppState,
     };
@@ -266,24 +281,24 @@ mod tests {
                         "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
                     ),
                     outbound: vec![
-                        Some(
+                        OutboundEntry::Dsn(Some(
                             "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
                                 .to_string(),
-                        ),
-                        Some(
+                        )),
+                        OutboundEntry::Dsn(Some(
                             "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
                                 .to_string(),
-                        ),
+                        )),
                     ],
                 },
                 KeyRing {
                     inbound: Some(
                         "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
                     ),
-                    outbound: vec![Some(
+                    outbound: vec![OutboundEntry::Dsn(Some(
                         "https://bbbbbb12345678901234567890123456@target.example.com/7890"
                             .to_string(),
-                    )],
+                    ))],
                 },
             ],
             modify_envelope_header: true,

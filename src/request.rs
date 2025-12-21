@@ -11,7 +11,7 @@ use std::io::prelude::*;
 use std::time::Instant;
 use tracing::{debug, warn};
 
-use crate::config::ConfigData;
+use crate::config::{ConfigData, DataCategory};
 use crate::dsn;
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
@@ -247,6 +247,58 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
     }
 }
 
+/// Detect the data category of an incoming request based on URL path and envelope body.
+/// If the category cannot be determined, returns None.
+pub fn detect_data_category(uri: &Uri, body: &Bytes) -> Option<DataCategory> {
+    let path = uri.path();
+    // Minidumps have dedicated endpoint
+    if path.contains("/minidump") {
+        return Some(DataCategory::Minidumps);
+    }
+    // Legacy store endpoint -> Errors
+    if path.contains("/store") {
+        return Some(DataCategory::Errors);
+    }
+    // OTel traces integration path -> Transactions
+    if path.contains("/integration/oltp/v1/traces") || path.ends_with("/traces/") {
+        return Some(DataCategory::Transactions);
+    }
+    // Envelope: inspect first item header for type
+    if path.contains("/envelope") {
+        // Envelope is newline separated lines:
+        // 1: envelope headers (json)
+        // 2: item headers (json) for the first item
+        // 3: item payload (raw)
+        // We only need the first item's header.type
+        let mut parts = body.splitn(3, |&x| x == b'\n');
+        // Skip envelope header
+        let _ = parts.next();
+        // Read item header
+        if let Some(item_header) = parts.next() {
+            if let Ok(header_str) = String::from_utf8(item_header.to_vec()) {
+                if let Ok(json) = serde_json::from_str::<Value>(&header_str) {
+                    if let Some(Value::String(ty)) = json.get("type") {
+                        let mapped = match ty.as_str() {
+                            "event" => Some(DataCategory::Errors),
+                            "transaction" => Some(DataCategory::Transactions),
+                            "replay_event" => Some(DataCategory::Replays),
+                            "metric_buckets" => Some(DataCategory::Metrics),
+                            "profile" => Some(DataCategory::Profiling),
+                            // minidump usually is separate endpoint, but keep for completeness
+                            "minidump" => Some(DataCategory::Minidumps),
+                            _ => None,
+                        };
+                        if mapped.is_some() {
+                            return mapped;
+                        }
+                    }
+                }
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use flate2::{
@@ -287,6 +339,33 @@ mod tests {
         assert!(headers.contains_key("Origin"));
     }
 
+    #[test]
+    fn test_detect_data_category_from_path_store() {
+        let uri: Uri = "https://o123.ingest.sentry.io/api/1/store/".parse().unwrap();
+        let bytes = Bytes::from_static(b"");
+        let cat = detect_data_category(&uri, &bytes);
+        assert!(matches!(cat, Some(DataCategory::Errors)));
+    }
+
+    #[test]
+    fn test_detect_data_category_from_path_minidump() {
+        let uri: Uri = "https://o123.ingest.sentry.io/api/1/minidump/".parse().unwrap();
+        let bytes = Bytes::from_static(b"");
+        let cat = detect_data_category(&uri, &bytes);
+        assert!(matches!(cat, Some(DataCategory::Minidumps)));
+    }
+
+    #[test]
+    fn test_detect_data_category_from_envelope_headers() {
+        // envelope header line
+        let l1 = r#"{"dsn":"https://deadbeef@ingest.sentry.io/1"}"#;
+        // first item header line
+        let l2 = r#"{"type":"transaction","length":5}"#;
+        let body = Bytes::from([Bytes::from(l1), Bytes::from("\n"), Bytes::from(l2), Bytes::from("\n"), Bytes::from("12345")].concat());
+        let uri: Uri = "https://o123.ingest.sentry.io/api/1/envelope/".parse().unwrap();
+        let cat = detect_data_category(&uri, &body);
+        assert!(matches!(cat, Some(DataCategory::Transactions)));
+    }
     #[test]
     fn make_outbound_request_replace_sentry_auth_header() {
         let config = ConfigData::default();

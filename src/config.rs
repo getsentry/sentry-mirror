@@ -10,6 +10,38 @@ use std::fs;
 
 use crate::logging::LogFormat;
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum DataCategory {
+    /// Error events
+    Errors,
+    /// Transactions / tracing
+    #[serde(alias = "tracing")]
+    Transactions,
+    /// Session replays
+    Replays,
+    /// Metrics buckets
+    Metrics,
+    /// Profiling data
+    Profiling,
+    /// Native crash reports
+    Minidumps,
+}
+
+/// Outbound destination configuration which may include filtering by data categories.
+/// Backwards compatible with plain DSN strings in YAML.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum OutboundEntry {
+    /// Shorthand: just a DSN string (or null)
+    Dsn(Option<String>),
+    /// Detailed form with optional category filters
+    Detailed {
+        dsn: Option<String>,
+        categories: Option<Vec<DataCategory>>,
+    },
+}
+
 /// A set of inbound and outbound keys.
 /// Requests sent to an inbound DSN are mirrored to all outbound DSNs
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -18,7 +50,7 @@ pub struct KeyRing {
     pub inbound: Option<String>,
 
     /// One or more upstream DSN keys that the mirror will forward traffic to.
-    pub outbound: Vec<Option<String>>,
+    pub outbound: Vec<OutboundEntry>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]

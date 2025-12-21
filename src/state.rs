@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use http_body_util::Full;
 use hyper::body::Bytes;
-use hyper_tls::HttpsConnector;
+use hyper_rustls::HttpsConnector;
 use hyper_util::{
     client::legacy::{Client, connect::HttpConnector},
     rt::TokioExecutor,
@@ -27,7 +27,13 @@ impl AppState {
         let keymap = dsn::make_key_map(config.keys.clone());
 
         // Create a client connection pool that is re-used.
-        let https = HttpsConnector::new();
+        let https = hyper_rustls::HttpsConnectorBuilder::new()
+            .with_native_roots()
+            .expect("could not load native root certificates")
+            .https_or_http()
+            .enable_http1()
+            .enable_http2()
+            .build();
         let client = Client::builder(TokioExecutor::new()).build::<_, Full<Bytes>>(https);
 
         Self {
