@@ -34,6 +34,7 @@ pub fn init(metrics_config: MetricsConfig) {
             .expect("Failed to parse metrics address")
             .set_global_prefix("sentrymirror")
             .with_global_labels(labels)
+            .send_histograms_as_distributions(true)
             .build()
             .expect("Could not create DogStatsD exporter");
 
