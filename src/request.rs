@@ -241,7 +241,7 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
                 Err(BodyError::CouldNotDecode(err))
             }
         }
-    } else if encoding_value == "" {
+    } else if encoding_value.is_empty() {
         // Some clients misbehave and send an empty content-encoding value.
         Ok(Bytes::from(body_vec))
     } else {
