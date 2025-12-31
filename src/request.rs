@@ -241,6 +241,9 @@ pub fn decode_body(encoding_header: &HeaderValue, body: &Bytes) -> Result<Bytes,
                 Err(BodyError::CouldNotDecode(err))
             }
         }
+    } else if encoding_value.is_empty() {
+        // Some clients misbehave and send an empty content-encoding value.
+        Ok(Bytes::from(body_vec))
     } else {
         warn!(encoding_value, "Unsupported content-encoding header value");
         Err(BodyError::UnsupportedCodec)
@@ -616,6 +619,22 @@ mod tests {
 
         let bytes = Bytes::from(buffer_out);
         let header_val: HeaderValue = "zstd".parse().unwrap();
+        let res = decode_body(&header_val, &bytes);
+        assert!(res.is_ok());
+        let decoded = res.unwrap();
+
+        assert_eq!(
+            decoded.to_vec().as_slice(),
+            contents,
+            "should get the same data back"
+        );
+    }
+
+    #[test]
+    fn test_decode_body_empty() {
+        let contents = b"some content";
+        let bytes = Bytes::from(contents.to_vec());
+        let header_val: HeaderValue = "".parse().unwrap();
         let res = decode_body(&header_val, &bytes);
         assert!(res.is_ok());
         let decoded = res.unwrap();
