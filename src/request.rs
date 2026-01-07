@@ -16,7 +16,7 @@ use crate::dsn;
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
 const NO_COPY_HEADERS: [&str; 3] = ["host", "x-forwarded-for", "content-length"];
-const INGEST_PATH_SEGMENTS: [&str; 3] = ["envelope", "store", "integration"];
+const INGEST_PATH_SEGMENTS: [&str; 4] = ["envelope", "minidump", "store", "integration"];
 
 /// Copy the relevant parts from `uri` and `headers` into a new request that can be sent
 /// to the outbound DSN. This function returns `RequestBuilder` because the body types
@@ -417,6 +417,29 @@ mod tests {
         assert_eq!(
             uri,
             "https://o789.ingest.sentry.io/api/6789/integration/oltp/v1/traces/"
+        );
+    }
+
+    #[test]
+    fn make_outbound_request_replace_project_id_minidump_url() {
+        let config = ConfigData::default();
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+        let uri: Uri = "https://o123.ingest.sentry.io/api/123/minidump/"
+            .parse()
+            .unwrap();
+
+        let headers = HeaderMap::new();
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let res = builder.body("");
+
+        assert!(res.is_ok());
+        let req = res.unwrap();
+        let uri = req.uri();
+        assert_eq!(
+            uri,
+            "https://o789.ingest.sentry.io/api/6789/minidump/"
         );
     }
 
