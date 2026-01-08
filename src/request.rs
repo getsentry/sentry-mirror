@@ -437,10 +437,7 @@ mod tests {
         assert!(res.is_ok());
         let req = res.unwrap();
         let uri = req.uri();
-        assert_eq!(
-            uri,
-            "https://o789.ingest.sentry.io/api/6789/minidump/"
-        );
+        assert_eq!(uri, "https://o789.ingest.sentry.io/api/6789/minidump/");
     }
 
     #[test]
