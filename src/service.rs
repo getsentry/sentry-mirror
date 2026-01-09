@@ -127,8 +127,8 @@ where
     // We'll race requests to the outbound DSN's and once all requests are complete
     // we use the body of the first response
     let mut responses = Vec::new();
-    for outbound_dsn in keyring.outbound.iter() {
-        let outbound_host = outbound_dsn.host.clone();
+    for outbound in keyring.outbound.iter() {
+        let outbound_host = outbound.dsn.host.clone();
         metrics::counter!(
             "handle_proxy.outbound_request.start",
             "outbound_host" => outbound_host.clone()
@@ -138,10 +138,10 @@ where
 
         let build_request_timer = Instant::now();
         let request_builder =
-            request::make_outbound_request(&state.config, &uri, &headers, outbound_dsn);
+            request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
 
-        let body_out = if state.config.modify_envelope_header {
-            match request::replace_envelope_dsn(&body_bytes, outbound_dsn) {
+        let body_out = if state.config.modify_envelope {
+            match request::modify_envelope(&body_bytes, &outbound.dsn, &outbound.filter) {
                 Some(new_body) => new_body,
                 None => body_bytes.clone(),
             }
@@ -241,7 +241,7 @@ mod tests {
 
     use super::{full, handle_request};
     use crate::{
-        config::{ConfigData, KeyRing},
+        config::{ConfigData, KeyRing, OutboundTarget},
         logging::LogFormat,
         state::AppState,
     };
@@ -266,27 +266,28 @@ mod tests {
                         "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
                     ),
                     outbound: vec![
-                        Some(
-                            "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
-                                .to_string(),
-                        ),
-                        Some(
-                            "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
-                                .to_string(),
-                        ),
+                        Some(OutboundTarget {
+                            dsn: "https://aaaaaaaa123456789012345678901234@target.example.com/5678".to_string(),
+                            filter: vec![],
+                        }),
+                        Some(OutboundTarget {
+                            dsn: "https://bbbbbbbb234567890123456789012345@other.example.com/9012".to_string(),
+                            filter: vec![],
+                        }),
                     ],
                 },
                 KeyRing {
                     inbound: Some(
                         "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
                     ),
-                    outbound: vec![Some(
-                        "https://bbbbbb12345678901234567890123456@target.example.com/7890"
-                            .to_string(),
-                    )],
+                    outbound: vec![Some(OutboundTarget {
+                        dsn: "https://bbbbbb12345678901234567890123456@target.example.com/7890".to_string(),
+                        filter: vec![],
+                    }),
+                    ],
                 },
             ],
-            modify_envelope_header: true,
+            modify_envelope: true,
         }
     }
 

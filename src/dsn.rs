@@ -99,9 +99,15 @@ impl FromStr for Dsn {
 }
 
 #[derive(Debug, PartialEq)]
+pub struct DsnTarget {
+    pub dsn: Dsn,
+    pub filter: Vec<String>,
+}
+
+#[derive(Debug, PartialEq)]
 pub struct DsnKeyRing {
     pub inbound: Dsn,
-    pub outbound: Vec<Dsn>,
+    pub outbound: Vec<DsnTarget>,
 }
 
 /// Convert a list of Config data keys into Dsn's that we can use
@@ -120,8 +126,11 @@ pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
                 Some(i) => Some(i),
                 None => None,
             })
-            .map(|outbound_str| outbound_str.parse::<Dsn>().expect("Invalid outbound DSN"))
-            .collect::<Vec<Dsn>>();
+            .map(|outbound_target| DsnTarget {
+                dsn: outbound_target.dsn.parse::<Dsn>().expect("Invalid outbound DSN"),
+                filter: outbound_target.filter.clone(),
+            })
+            .collect::<Vec<DsnTarget>>();
         keymap.insert(
             inbound_dsn.key_id(),
             DsnKeyRing {
@@ -139,7 +148,7 @@ pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
         out.push_str(format!("Inbound: {}\n", keyring.inbound).as_ref());
         out.push_str("Outbound:\n");
         for outbound in keyring.outbound.iter() {
-            out.push_str(format!("- {}\n", outbound).as_ref());
+            out.push_str(format!("- {}\n", outbound.dsn).as_ref());
         }
     }
     out
@@ -180,7 +189,7 @@ pub fn from_request(uri: &Uri, headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::KeyRing;
+    use crate::config::{KeyRing, OutboundTarget};
 
     #[test]
     fn parse_from_string_valid() {
@@ -218,8 +227,14 @@ mod tests {
         let keys = vec![KeyRing {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
-                Some("https://ghijkl@sentry.io/567".to_string()),
-                Some("https://mnopq@sentry.io/890".to_string()),
+                Some(OutboundTarget {
+                    dsn: "https://ghijkl@sentry.io/567".to_string(),
+                    filter: vec![],
+                }),
+                Some(OutboundTarget {
+                    dsn: "https://mnopq@sentry.io/890".to_string(),
+                    filter: vec![],
+                }),
             ],
         }];
         let keymap = make_key_map(keys);
@@ -227,8 +242,8 @@ mod tests {
         let value = keymap.get("abcdef").expect("Should have a value");
         assert_eq!(value.inbound.public_key, "abcdef");
         assert_eq!(value.outbound.len(), 2);
-        assert_eq!(value.outbound[0].public_key, "ghijkl");
-        assert_eq!(value.outbound[1].public_key, "mnopq");
+        assert_eq!(value.outbound[0].dsn.public_key, "ghijkl");
+        assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
     }
 
     #[test]
@@ -320,8 +335,14 @@ mod tests {
         let keys = vec![KeyRing {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
-                Some("https://ghijkl@sentry.io/567".to_string()),
-                Some("https://mnopq@sentry.io/890".to_string()),
+                Some(OutboundTarget {
+                    dsn: "https://ghijkl@sentry.io/567".to_string(),
+                    filter: vec![],
+                }),
+                Some(OutboundTarget {
+                    dsn: "https://mnopq@sentry.io/890".to_string(),
+                    filter: vec![],
+                }),
             ],
         }];
         let key_map = make_key_map(keys);

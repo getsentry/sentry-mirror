@@ -60,7 +60,7 @@ pub fn make_outbound_request(
     let outbound_headers = builder.headers_mut().unwrap();
     for (key, value) in headers.iter() {
         if NO_COPY_HEADERS.contains(&key.as_str())
-            || (config.modify_envelope_header && key == "content-encoding")
+            || (config.modify_envelope && key == "content-encoding")
         {
             continue;
         }
@@ -75,9 +75,57 @@ pub fn make_outbound_request(
     builder
 }
 
+
+fn copy_envelope_body(bytes: &[u8], filter: &[String]) -> Vec<u8> {
+    // If filter is empty, return copy of all bytes
+    if filter.is_empty() {
+        return bytes.to_owned();
+    }
+
+    let mut output = Vec::new();
+    let mut body_chunks = bytes.split(|&x| x == b'\n');
+
+    // Iterate over blocks in envelope
+    while let Some(b) = body_chunks.next() { 
+        let header_slice = b;
+
+        let header_str = match String::from_utf8(header_slice.to_vec()) {
+            Ok(h) => h,
+            Err(e) => {
+                warn!("Could not convert envelope header to String {0}", e);
+                break;
+            }
+        };
+
+        let header_json: Value = match serde_json::from_str(&header_str) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Could not convert envelope header to JSON {0}", e);
+                break;
+            }
+        };
+
+        let event_type = header_json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let data_chunk = match body_chunks.next() {
+            Some(d) => d,
+            None => {
+                warn!("Could not get data chunk for block type {event_type}");
+                break;
+            }
+        };
+        if filter.contains(&event_type.to_string()) {
+            output.extend_from_slice(header_slice);
+            output.push(b'\n');
+            output.extend_from_slice(data_chunk);
+            output.push(b'\n');
+        }
+    }
+    output
+}
+
 /// Replace the DSN key if it is found in the first line of the body
 /// as per the envelope specs https://develop.sentry.dev/sdk/envelopes/
-pub fn replace_envelope_dsn(body: &Bytes, outbound: &dsn::Dsn) -> Option<Bytes> {
+pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, filter: &[String]) -> Option<Bytes> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
     let envelope_header = match body_chunks.next() {
@@ -115,7 +163,7 @@ pub fn replace_envelope_dsn(body: &Bytes, outbound: &dsn::Dsn) -> Option<Bytes> 
 
     let header_line = Bytes::from(json_header.to_string());
     let envelope_body = match body_chunks.next() {
-        Some(c) => c.to_owned(),
+        Some(c) => copy_envelope_body(c, filter),
         None => return None,
     };
     let new_body =
@@ -162,7 +210,7 @@ where
 
     // Bodies can be compressed. If relay is configured to be more permissive
     // we don't have to decompress and rewrite the body.
-    if config.modify_envelope_header && headers.contains_key("content-encoding") {
+    if config.modify_envelope && headers.contains_key("content-encoding") {
         let request_encoding = headers.get("content-encoding").unwrap();
         let decode_body_time = Instant::now();
         body_bytes = match decode_body(request_encoding, &body_bytes) {
@@ -466,7 +514,7 @@ mod tests {
         );
 
         let config = ConfigData {
-            modify_envelope_header: false,
+            modify_envelope: false,
             ..ConfigData::default()
         };
         let builder = make_outbound_request(&config, &uri, &headers, &outbound);
@@ -481,36 +529,36 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_envelope_dsn_empty_body() {
+    fn test_modify_envelope_empty_body() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
         let body = Bytes::from("");
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_replace_envelope_dsn_missing_key() {
+    fn test_modify_envelope_missing_key() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
         let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#];
         let body = string_list_to_bytes(lines);
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_replace_envelope_dsn_only_first_line() {
+    fn test_modify_envelope_only_first_line() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
         let lines = vec![r#"{"dsn":"value"}"#, r#"{"second":"line", "dsn":"value"}"#];
         let body = string_list_to_bytes(lines);
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
@@ -523,7 +571,7 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_envelope_dsn_present() {
+    fn test_modify_envelope_present() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -532,7 +580,7 @@ mod tests {
             r#"{"message":"something failed"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_some());
 
@@ -548,7 +596,7 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_envelope_dsn_trace_public_key() {
+    fn test_modify_envelope_trace_public_key() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -557,7 +605,7 @@ mod tests {
             r#"{"second":"line", "dsn":"value"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
@@ -678,7 +726,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_and_decode_body() {
         let config = make_test_config();
-        assert!(config.modify_envelope_header, "Should default to true");
+        assert!(config.modify_envelope, "Should default to true");
 
         let contents = b"some content to be compressed";
         let mut encoder = DeflateEncoder::new(&contents[..], Compression::fast());
@@ -703,7 +751,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_and_decode_body_decode_disabled() {
         let mut config = make_test_config();
-        config.modify_envelope_header = false;
+        config.modify_envelope = false;
 
         let contents = b"some content to be compressed";
         let mut encoder = DeflateEncoder::new(&contents[..], Compression::fast());
@@ -725,6 +773,43 @@ mod tests {
         let new_bytes = result.unwrap();
         assert_eq!(new_bytes.to_vec(), expected_bytes.to_vec());
         assert_ne!(new_bytes.to_vec(), b"some content to be compressed");
+    }
+
+    #[test]
+    fn test_copy_envelope_body_empty_filter() {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
+        body.extend_from_slice(b"hello");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+        body.push(b'\n');
+
+        let filter: Vec<String> = vec![];
+        let result = copy_envelope_body(&body, &filter);
+
+        assert_eq!(result, body, "Empty filter should return all bytes unchanged");
+    }
+
+    #[test]
+    fn test_copy_envelope_body_with_filter() {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
+        body.extend_from_slice(b"hello");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+        body.push(b'\n');
+
+        let filter = vec!["event".to_string()];
+        let result = copy_envelope_body(&body, &filter);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        expected.extend_from_slice(b"test");
+        expected.push(b'\n');
+
+        assert_eq!(result, expected, "Should include filtered block types");
     }
 
     fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {

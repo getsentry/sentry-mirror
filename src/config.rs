@@ -10,6 +10,12 @@ use std::fs;
 
 use crate::logging::LogFormat;
 
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct OutboundTarget {
+    pub dsn: String,
+    pub filter: Vec<String>,
+}
+
 /// A set of inbound and outbound keys.
 /// Requests sent to an inbound DSN are mirrored to all outbound DSNs
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -18,7 +24,7 @@ pub struct KeyRing {
     pub inbound: Option<String>,
 
     /// One or more upstream DSN keys that the mirror will forward traffic to.
-    pub outbound: Vec<Option<String>>,
+    pub outbound: Vec<Option<OutboundTarget>>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -62,7 +68,7 @@ pub struct ConfigData {
     /// Disaling envelope header modification makes mirroring more efficient,
     /// but requires the downstream relay to not be validating projectids/dsns in the envelope
     /// headers.
-    pub modify_envelope_header: bool,
+    pub modify_envelope: bool,
 }
 
 impl ConfigData {
@@ -89,7 +95,7 @@ impl Default for ConfigData {
             port: 3000,
             verbose: false,
             keys: vec![],
-            modify_envelope_header: true,
+            modify_envelope: true,
         }
     }
 }
