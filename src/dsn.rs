@@ -7,7 +7,7 @@ use hyper::{HeaderMap, Uri};
 use regex::Regex;
 use url::Url;
 
-use crate::config;
+use crate::config::ConfigData;
 
 /// DSN components parsed from a DSN string
 #[derive(Debug, Clone, PartialEq)]
@@ -112,10 +112,48 @@ pub struct DsnKeyRing {
 
 /// Convert a list of Config data keys into Dsn's that we can use
 /// when handling requests.
-pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
+pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
     let mut keymap: HashMap<String, DsnKeyRing> = HashMap::new();
-    for item in keys {
-        let inbound_dsn = match item.inbound.expect("Missing inbound key").parse::<Dsn>() {
+
+    // NOTE: This loop exists for backward compatibility with older config files.
+    for item in &config.keys {
+        let inbound_dsn = match item
+            .inbound
+            .as_ref()
+            .expect("Missing inbound key")
+            .parse::<Dsn>()
+        {
+            Ok(r) => r,
+            Err(e) => panic!("{:?}", e),
+        };
+        let outbound = item
+            .outbound
+            .iter()
+            .filter_map(|item| match item {
+                Some(i) => Some(i),
+                None => None,
+            })
+            .map(|outbound_str| DsnTarget {
+                dsn: outbound_str.parse::<Dsn>().expect("Invalid outbound DSN"),
+                filter: vec![],
+            })
+            .collect::<Vec<DsnTarget>>();
+        keymap.insert(
+            inbound_dsn.key_id(),
+            DsnKeyRing {
+                inbound: inbound_dsn,
+                outbound,
+            },
+        );
+    }
+
+    for item in &config.rules {
+        let inbound_dsn = match item
+            .inbound
+            .as_ref()
+            .expect("Missing inbound key")
+            .parse::<Dsn>()
+        {
             Ok(r) => r,
             Err(e) => panic!("{:?}", e),
         };
@@ -192,7 +230,26 @@ pub fn from_request(uri: &Uri, headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{KeyRing, OutboundTarget};
+    use crate::config::{ConfigData, KeyRing, OutboundTarget, Rule};
+    use crate::logging::LogFormat;
+
+    fn make_test_config() -> ConfigData {
+        ConfigData {
+            sentry_dsn: None,
+            sentry_env: None,
+            traces_sample_rate: None,
+            log_filter: "debug".into(),
+            log_format: LogFormat::Text,
+            statsd_addr: None,
+            default_metrics_tags: None,
+            ip: "127.0.0.1".into(),
+            port: 3000,
+            verbose: true,
+            keys: vec![],
+            rules: vec![],
+            modify_envelope: true,
+        }
+    }
 
     #[test]
     fn parse_from_string_valid() {
@@ -226,27 +283,95 @@ mod tests {
     }
 
     #[test]
-    fn make_key_map_valid() {
-        let keys = vec![KeyRing {
+    fn make_key_map_with_key_rings_only() {
+        let mut config = make_test_config();
+        config.keys = vec![KeyRing {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
-                Some(OutboundTarget {
-                    dsn: "https://ghijkl@sentry.io/567".to_string(),
-                    filter: vec![],
-                }),
-                Some(OutboundTarget {
-                    dsn: "https://mnopq@sentry.io/890".to_string(),
-                    filter: vec![],
-                }),
+                Some("https://ghijkl@sentry.io/567".to_string()),
+                Some("https://mnopq@sentry.io/890".to_string()),
             ],
         }];
-        let keymap = make_key_map(keys);
+        let keymap = make_key_map(&config);
         assert_eq!(keymap.len(), 1);
         let value = keymap.get("abcdef").expect("Should have a value");
         assert_eq!(value.inbound.public_key, "abcdef");
         assert_eq!(value.outbound.len(), 2);
         assert_eq!(value.outbound[0].dsn.public_key, "ghijkl");
+        assert_eq!(
+            value.outbound[0].filter.len(),
+            0,
+            "KeyRing should have empty filter"
+        );
         assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
+        assert_eq!(
+            value.outbound[1].filter.len(),
+            0,
+            "KeyRing should have empty filter"
+        );
+    }
+
+    #[test]
+    fn make_key_map_with_rules_only() {
+        let mut config = make_test_config();
+        config.rules = vec![Rule {
+            inbound: Some("https://abcdef@sentry.io/1234".to_string()),
+            outbound: vec![
+                Some(OutboundTarget {
+                    dsn: "https://ghijkl@sentry.io/567".to_string(),
+                    filter: vec!["event".to_string(), "transaction".to_string()],
+                }),
+                Some(OutboundTarget {
+                    dsn: "https://mnopq@sentry.io/890".to_string(),
+                    filter: vec!["replay".to_string()],
+                }),
+            ],
+        }];
+        let keymap = make_key_map(&config);
+        assert_eq!(keymap.len(), 1);
+        let value = keymap.get("abcdef").expect("Should have a value");
+        assert_eq!(value.inbound.public_key, "abcdef");
+        assert_eq!(value.outbound.len(), 2);
+        assert_eq!(value.outbound[0].dsn.public_key, "ghijkl");
+        assert_eq!(value.outbound[0].filter, vec!["event", "transaction"]);
+        assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
+        assert_eq!(value.outbound[1].filter, vec!["replay"]);
+    }
+
+    #[test]
+    fn make_key_map_with_both_keys_and_rules() {
+        let mut config = make_test_config();
+        config.keys = vec![KeyRing {
+            inbound: Some("https://key111@sentry.io/1111".to_string()),
+            outbound: vec![Some("https://key222@sentry.io/2222".to_string())],
+        }];
+        config.rules = vec![Rule {
+            inbound: Some("https://rule333@sentry.io/3333".to_string()),
+            outbound: vec![Some(OutboundTarget {
+                dsn: "https://rule444@sentry.io/4444".to_string(),
+                filter: vec!["event".to_string()],
+            })],
+        }];
+        let keymap = make_key_map(&config);
+        assert_eq!(
+            keymap.len(),
+            2,
+            "Should have entries from both keys and rules"
+        );
+
+        // Check KeyRing entry
+        let key_value = keymap.get("key111").expect("Should have KeyRing entry");
+        assert_eq!(key_value.inbound.public_key, "key111");
+        assert_eq!(key_value.outbound.len(), 1);
+        assert_eq!(key_value.outbound[0].dsn.public_key, "key222");
+        assert_eq!(key_value.outbound[0].filter.len(), 0);
+
+        // Check Rule entry
+        let rule_value = keymap.get("rule333").expect("Should have Rule entry");
+        assert_eq!(rule_value.inbound.public_key, "rule333");
+        assert_eq!(rule_value.outbound.len(), 1);
+        assert_eq!(rule_value.outbound[0].dsn.public_key, "rule444");
+        assert_eq!(rule_value.outbound[0].filter, vec!["event"]);
     }
 
     #[test]
@@ -335,7 +460,8 @@ mod tests {
 
     #[test]
     fn test_format_key_map() {
-        let keys = vec![KeyRing {
+        let mut config = make_test_config();
+        config.rules = vec![Rule {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
                 Some(OutboundTarget {
@@ -348,7 +474,7 @@ mod tests {
                 }),
             ],
         }];
-        let key_map = make_key_map(keys);
+        let key_map = make_key_map(&config);
         let output = format_key_map(&key_map);
         dbg!(&output);
         assert!(output.contains("Inbound: https://abcdef@sentry.io/1234"));

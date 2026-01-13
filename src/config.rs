@@ -1,7 +1,7 @@
 use crate::Args;
 use figment::{
-    providers::{Env, Format, Yaml},
     Figment, Metadata, Profile, Provider,
+    providers::{Env, Format, Yaml},
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -19,12 +19,23 @@ pub struct OutboundTarget {
 /// A set of inbound and outbound keys.
 /// Requests sent to an inbound DSN are mirrored to all outbound DSNs
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KeyRing {
+pub struct Rule {
     /// Inbound keys are virtual DSNs that the mirror will accept traffic on
     pub inbound: Option<String>,
 
     /// One or more upstream DSN keys that the mirror will forward traffic to.
     pub outbound: Vec<Option<OutboundTarget>>,
+}
+
+/// A set of inbound and outbound keys.
+/// Requests sent to an inbound DSN are mirrored to all outbound DSNs
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct KeyRing {
+    /// Inbound keys are virtual DSNs that the mirror will accept traffic on
+    pub inbound: Option<String>,
+
+    /// One or more upstream DSN keys that the mirror will forward traffic to.
+    pub outbound: Vec<Option<String>>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -64,6 +75,9 @@ pub struct ConfigData {
     /// A list of keypairs that the server will handle.
     pub keys: Vec<KeyRing>,
 
+    // A list of mirroring rules that the server will handle
+    pub rules: Vec<Rule>,
+
     /// Set to false to skip rewriting envelope headers.
     /// Disaling envelope header modification makes mirroring more efficient,
     /// but requires the downstream relay to not be validating projectids/dsns in the envelope
@@ -95,6 +109,7 @@ impl Default for ConfigData {
             port: 3000,
             verbose: false,
             keys: vec![],
+            rules: vec![],
             modify_envelope: true,
         }
     }

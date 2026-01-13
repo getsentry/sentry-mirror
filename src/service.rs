@@ -241,7 +241,7 @@ mod tests {
 
     use super::{full, handle_request};
     use crate::{
-        config::{ConfigData, KeyRing, OutboundTarget},
+        config::{ConfigData, OutboundTarget, Rule},
         logging::LogFormat,
         state::AppState,
     };
@@ -260,31 +260,34 @@ mod tests {
             ip: "127.0.0.1".into(),
             port: 3000,
             verbose: true,
-            keys: vec![
-                KeyRing {
+            keys: vec![],
+            rules: vec![
+                Rule {
                     inbound: Some(
                         "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
                     ),
                     outbound: vec![
                         Some(OutboundTarget {
-                            dsn: "https://aaaaaaaa123456789012345678901234@target.example.com/5678".to_string(),
+                            dsn: "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
+                                .to_string(),
                             filter: vec![],
                         }),
                         Some(OutboundTarget {
-                            dsn: "https://bbbbbbbb234567890123456789012345@other.example.com/9012".to_string(),
+                            dsn: "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
+                                .to_string(),
                             filter: vec![],
                         }),
                     ],
                 },
-                KeyRing {
+                Rule {
                     inbound: Some(
                         "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
                     ),
                     outbound: vec![Some(OutboundTarget {
-                        dsn: "https://bbbbbb12345678901234567890123456@target.example.com/7890".to_string(),
+                        dsn: "https://bbbbbb12345678901234567890123456@target.example.com/7890"
+                            .to_string(),
                         filter: vec![],
-                    }),
-                    ],
+                    })],
                 },
             ],
             modify_envelope: true,
