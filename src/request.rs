@@ -75,24 +75,32 @@ pub fn make_outbound_request(
     builder
 }
 
-fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Vec<u8> {
+fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Option<Vec<u8>> {
     // If filter is empty, return copy of all bytes
     if filter.is_empty() {
-        return bytes.to_owned();
+        return Some(bytes.to_owned());
     }
 
     let mut output = Vec::new();
-    let mut body_chunks = bytes.split(|&x| x == b'\n');
+    let mut position = 0;
 
     // Iterate over blocks in envelope
-    while let Some(b) = body_chunks.next() {
-        let header_slice = b;
+    while position < bytes.len() {
+        // Find the end of the header line (first \n)
+        let header_end = match bytes[position..].iter().position(|&x| x == b'\n') {
+            Some(pos) => position + pos,
+            None => {
+                warn!("Could not find header line ending");
+                return None;
+            }
+        };
 
+        let header_slice = &bytes[position..header_end];
         let header_str = match String::from_utf8(header_slice.to_vec()) {
             Ok(h) => h,
             Err(e) => {
                 warn!("Could not convert envelope header to String {0}", e);
-                break;
+                return None;
             }
         };
 
@@ -100,7 +108,7 @@ fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Vec<u8> {
             Ok(v) => v,
             Err(e) => {
                 warn!("Could not convert envelope header to JSON {0}", e);
-                break;
+                return None;
             }
         };
 
@@ -108,21 +116,37 @@ fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Vec<u8> {
             .get("type")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        let data_chunk = match body_chunks.next() {
-            Some(d) => d,
+
+        let length = match header_json.get("length").and_then(|v| v.as_u64()) {
+            Some(len) => len as usize,
             None => {
-                warn!("Could not get data chunk for block type {event_type}");
-                break;
+                warn!("Missing length field in header for block type {event_type}");
+                return None;
             }
         };
+
+        // Move past the header and its \n
+        let data_start = header_end + 1;
+        let data_end = data_start + length;
+
+        if data_end > bytes.len() {
+            warn!("Data length {length} exceeds remaining bytes for block type {event_type}");
+            return None;
+        }
+
+        let data_chunk = &bytes[data_start..data_end];
+
         if filter.contains(&event_type.to_string()) {
             output.extend_from_slice(header_slice);
             output.push(b'\n');
             output.extend_from_slice(data_chunk);
             output.push(b'\n');
         }
+
+        // Move to next block (skip past data and the trailing \n)
+        position = data_end + 1;
     }
-    output
+    Some(output)
 }
 
 /// Replace the DSN key if it is found in the first line of the body
@@ -165,7 +189,7 @@ pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, filter: &[String]) -> 
 
     let header_line = Bytes::from(json_header.to_string());
     let envelope_body = match body_chunks.next() {
-        Some(c) => build_envelope_body(c, filter),
+        Some(c) => build_envelope_body(c, filter)?,
         None => return None,
     };
     let new_body =
@@ -790,8 +814,10 @@ mod tests {
         let filter: Vec<String> = vec![];
         let result = build_envelope_body(&body, &filter);
 
+        assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
-            result, body,
+            result.unwrap(),
+            body,
             "Empty filter should return all bytes unchanged"
         );
     }
@@ -814,7 +840,45 @@ mod tests {
         expected.extend_from_slice(b"test");
         expected.push(b'\n');
 
-        assert_eq!(result, expected, "Should include filtered block types");
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Should include filtered block types"
+        );
+    }
+
+    #[test]
+    fn test_build_envelope_body_multiline_data() {
+        let mut body = Vec::new();
+
+        let attachment_data = "hello\nhello";
+        let attachment_header = format!(
+            "{{\"type\":\"attachment\",\"length\":{}}}\n",
+            attachment_data.len()
+        );
+
+        body.extend_from_slice(attachment_header.as_bytes());
+        body.extend_from_slice(attachment_data.as_bytes());
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+        body.push(b'\n');
+
+        let filter = vec!["attachment".to_string()];
+        let result = build_envelope_body(&body, &filter);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(attachment_header.as_bytes());
+        expected.extend_from_slice(attachment_data.as_bytes());
+        expected.push(b'\n');
+
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Should correctly handle multiline data by using the length field from header"
+        );
     }
 
     fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
