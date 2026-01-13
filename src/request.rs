@@ -881,6 +881,41 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_build_envelope_body_binary_data() {
+        // Test with binary data that is not valid UTF-8 and contains newline
+        let mut body = Vec::new();
+
+        // Binary data with invalid UTF-8 sequences and embedded newline (0x0A)
+        let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
+        let binary_header = format!(
+            "{{\"type\":\"attachment\",\"length\":{}}}\n",
+            binary_data.len()
+        );
+
+        body.extend_from_slice(binary_header.as_bytes());
+        body.extend_from_slice(&binary_data);
+        body.push(b'\n');
+
+        let filter = vec!["attachment".to_string()];
+        let result = build_envelope_body(&body, &filter);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(binary_header.as_bytes());
+        expected.extend_from_slice(&binary_data);
+        expected.push(b'\n');
+
+        assert!(
+            result.is_some(),
+            "Should return Some even with non-UTF8 data containing newline in payload"
+        );
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Should correctly handle binary data with embedded newline by using length field from header"
+        );
+    }
+
     fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
         let joined = lines.join("\n");
 
