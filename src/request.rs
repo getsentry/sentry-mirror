@@ -75,13 +75,17 @@ pub fn make_outbound_request(
     builder
 }
 
-fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Option<Vec<u8>> {
-    // If filter is empty, return copy of all bytes
+fn build_envelope_body(bytes: &[u8], filter: &[String], mult: usize) -> Option<Vec<u8>> {
+    let mut output = Vec::with_capacity(bytes.len() * mult);
+
+    // If filter is empty, return copy of all bytes repeated mult times
     if filter.is_empty() {
-        return Some(bytes.to_owned());
+        for _ in 0..mult {
+            output.extend_from_slice(bytes);
+        }
+        return Some(output);
     }
 
-    let mut output = Vec::new();
     let mut position = 0;
 
     // Iterate over blocks in envelope
@@ -137,10 +141,12 @@ fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Option<Vec<u8>> {
         let data_chunk = &bytes[data_start..data_end];
 
         if filter.contains(&event_type.to_string()) {
-            output.extend_from_slice(header_slice);
-            output.push(b'\n');
-            output.extend_from_slice(data_chunk);
-            output.push(b'\n');
+            for _ in 0..mult {
+                output.extend_from_slice(header_slice);
+                output.push(b'\n');
+                output.extend_from_slice(data_chunk);
+                output.push(b'\n');
+            }
         }
 
         // Move to next block (skip past data and the trailing \n)
@@ -151,7 +157,12 @@ fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Option<Vec<u8>> {
 
 /// Replace the DSN key if it is found in the first line of the body
 /// as per the envelope specs https://develop.sentry.dev/sdk/envelopes/
-pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, filter: &[String]) -> Option<Bytes> {
+pub fn modify_envelope(
+    body: &Bytes,
+    outbound: &dsn::Dsn,
+    filter: &[String],
+    mult: usize,
+) -> Option<Bytes> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
     let envelope_header = match body_chunks.next() {
@@ -189,7 +200,7 @@ pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, filter: &[String]) -> 
 
     let header_line = Bytes::from(json_header.to_string());
     let envelope_body = match body_chunks.next() {
-        Some(c) => build_envelope_body(c, filter)?,
+        Some(c) => build_envelope_body(c, filter, mult)?,
         None => return None,
     };
     let new_body =
@@ -560,7 +571,7 @@ mod tests {
             .parse()
             .unwrap();
         let body = Bytes::from("");
-        let result = modify_envelope(&body, &outbound, &[]);
+        let result = modify_envelope(&body, &outbound, &[], 1);
 
         assert!(result.is_none());
     }
@@ -572,7 +583,7 @@ mod tests {
             .unwrap();
         let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[]);
+        let result = modify_envelope(&body, &outbound, &[], 1);
 
         assert!(result.is_none());
     }
@@ -584,7 +595,7 @@ mod tests {
             .unwrap();
         let lines = vec![r#"{"dsn":"value"}"#, r#"{"second":"line", "dsn":"value"}"#];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[]);
+        let result = modify_envelope(&body, &outbound, &[], 1);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
@@ -606,7 +617,7 @@ mod tests {
             r#"{"message":"something failed"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[]);
+        let result = modify_envelope(&body, &outbound, &[], 1);
 
         assert!(result.is_some());
 
@@ -631,7 +642,7 @@ mod tests {
             r#"{"second":"line", "dsn":"value"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[]);
+        let result = modify_envelope(&body, &outbound, &[], 1);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
@@ -812,7 +823,7 @@ mod tests {
         body.push(b'\n');
 
         let filter: Vec<String> = vec![];
-        let result = build_envelope_body(&body, &filter);
+        let result = build_envelope_body(&body, &filter, 1);
 
         assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
@@ -833,7 +844,7 @@ mod tests {
         body.push(b'\n');
 
         let filter = vec!["event".to_string()];
-        let result = build_envelope_body(&body, &filter);
+        let result = build_envelope_body(&body, &filter, 1);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
@@ -866,7 +877,7 @@ mod tests {
         body.push(b'\n');
 
         let filter = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &filter);
+        let result = build_envelope_body(&body, &filter, 1);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(attachment_header.as_bytes());
@@ -896,7 +907,7 @@ mod tests {
         body.push(b'\n');
 
         let filter = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &filter);
+        let result = build_envelope_body(&body, &filter, 1);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(binary_header.as_bytes());
@@ -914,9 +925,64 @@ mod tests {
         );
     }
 
+    #[test]
+    fn test_build_envelope_body_mult_no_filter() {
+        // When mult > 1 and no filter, entire body should be repeated N times
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+        body.push(b'\n');
+
+        let filter: Vec<String> = vec![];
+        let result = build_envelope_body(&body, &filter, 3);
+
+        let mut expected = Vec::new();
+        for _ in 0..3 {
+            expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+            expected.extend_from_slice(b"test");
+            expected.push(b'\n');
+        }
+
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Empty filter with mult=3 should repeat entire body 3 times"
+        );
+    }
+
+    #[test]
+    fn test_build_envelope_body_mult_with_filter() {
+        // When mult > 1 and filter present, each matching block should be repeated N times
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
+        body.extend_from_slice(b"hello");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+        body.push(b'\n');
+
+        let filter = vec!["event".to_string()];
+        let result = build_envelope_body(&body, &filter, 2);
+
+        let mut expected = Vec::new();
+        // Event block should be repeated 2 times
+        for _ in 0..2 {
+            expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+            expected.extend_from_slice(b"test");
+            expected.push(b'\n');
+        }
+
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Filter with mult=2 should repeat each matching block 2 times"
+        );
+    }
+
     fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
         let joined = lines.join("\n");
-
         Bytes::from(joined)
     }
 

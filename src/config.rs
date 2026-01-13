@@ -11,9 +11,21 @@ use std::fs;
 use crate::logging::LogFormat;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct OutboundTarget {
     pub dsn: String,
     pub filter: Vec<String>,
+    pub mult: usize,
+}
+
+impl Default for OutboundTarget {
+    fn default() -> Self {
+        Self {
+            dsn: String::new(),
+            filter: vec![],
+            mult: 1,
+        }
+    }
 }
 
 /// A set of inbound and outbound keys.
@@ -143,4 +155,47 @@ pub fn from_args(args: &Args) -> Result<ConfigData, Box<figment::Error>> {
 pub fn get_version() -> &'static str {
     let release_name = fs::read_to_string("./VERSION").expect("Unable to read version");
     Box::leak(release_name.into_boxed_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_outbound_target_mult_optional() {
+        // Test that mult is optional and defaults to 1 when not specified
+        let json = r#"{"dsn": "https://key@sentry.io/123", "filter": ["event"]}"#;
+        let target: OutboundTarget = serde_json::from_str(json).unwrap();
+
+        assert_eq!(target.dsn, "https://key@sentry.io/123");
+        assert_eq!(target.filter, vec!["event"]);
+        assert_eq!(
+            target.mult, 1,
+            "mult should default to 1 when not specified"
+        );
+    }
+
+    #[test]
+    fn test_outbound_target_mult_specified() {
+        // Test that mult can be explicitly set
+        let json = r#"{"dsn": "https://key@sentry.io/123", "filter": [], "mult": 5}"#;
+        let target: OutboundTarget = serde_json::from_str(json).unwrap();
+
+        assert_eq!(target.dsn, "https://key@sentry.io/123");
+        assert_eq!(target.mult, 5, "mult should be 5 when explicitly specified");
+    }
+
+    #[test]
+    fn test_outbound_target_only_dsn() {
+        // Test that only dsn is required, filter and mult are optional
+        let json = r#"{"dsn": "https://key@sentry.io/123"}"#;
+        let target: OutboundTarget = serde_json::from_str(json).unwrap();
+
+        assert_eq!(target.dsn, "https://key@sentry.io/123");
+        assert!(
+            target.filter.is_empty(),
+            "filter should default to empty vec"
+        );
+        assert_eq!(target.mult, 1, "mult should default to 1");
+    }
 }

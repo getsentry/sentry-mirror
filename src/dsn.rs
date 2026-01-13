@@ -102,6 +102,7 @@ impl FromStr for Dsn {
 pub struct DsnTarget {
     pub dsn: Dsn,
     pub filter: Vec<String>,
+    pub mult: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -136,6 +137,7 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
             .map(|outbound_str| DsnTarget {
                 dsn: outbound_str.parse::<Dsn>().expect("Invalid outbound DSN"),
                 filter: vec![],
+                mult: 1,
             })
             .collect::<Vec<DsnTarget>>();
         keymap.insert(
@@ -170,6 +172,7 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
                     .parse::<Dsn>()
                     .expect("Invalid outbound DSN"),
                 filter: outbound_target.filter.clone(),
+                mult: outbound_target.mult,
             })
             .collect::<Vec<DsnTarget>>();
         keymap.insert(
@@ -320,10 +323,12 @@ mod tests {
                 Some(OutboundTarget {
                     dsn: "https://ghijkl@sentry.io/567".to_string(),
                     filter: vec!["event".to_string(), "transaction".to_string()],
+                    mult: 1,
                 }),
                 Some(OutboundTarget {
                     dsn: "https://mnopq@sentry.io/890".to_string(),
                     filter: vec!["replay".to_string()],
+                    mult: 1,
                 }),
             ],
         }];
@@ -350,6 +355,7 @@ mod tests {
             outbound: vec![Some(OutboundTarget {
                 dsn: "https://rule444@sentry.io/4444".to_string(),
                 filter: vec!["event".to_string()],
+                mult: 1,
             })],
         }];
         let keymap = make_key_map(&config);
@@ -467,10 +473,12 @@ mod tests {
                 Some(OutboundTarget {
                     dsn: "https://ghijkl@sentry.io/567".to_string(),
                     filter: vec![],
+                    mult: 1,
                 }),
                 Some(OutboundTarget {
                     dsn: "https://mnopq@sentry.io/890".to_string(),
                     filter: vec![],
+                    mult: 1,
                 }),
             ],
         }];

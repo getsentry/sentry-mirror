@@ -141,7 +141,12 @@ where
             request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
 
         let body_out = if state.config.modify_envelope {
-            match request::modify_envelope(&body_bytes, &outbound.dsn, &outbound.filter) {
+            match request::modify_envelope(
+                &body_bytes,
+                &outbound.dsn,
+                &outbound.filter,
+                outbound.mult,
+            ) {
                 Some(new_body) => new_body,
                 None => body_bytes.clone(),
             }
@@ -271,11 +276,13 @@ mod tests {
                             dsn: "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
                                 .to_string(),
                             filter: vec![],
+                            mult: 1,
                         }),
                         Some(OutboundTarget {
                             dsn: "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
                                 .to_string(),
                             filter: vec![],
+                            mult: 1,
                         }),
                     ],
                 },
@@ -287,6 +294,7 @@ mod tests {
                         dsn: "https://bbbbbb12345678901234567890123456@target.example.com/7890"
                             .to_string(),
                         filter: vec![],
+                        mult: 1,
                     })],
                 },
             ],
