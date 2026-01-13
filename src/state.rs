@@ -4,7 +4,7 @@ use http_body_util::Full;
 use hyper::body::Bytes;
 use hyper_tls::HttpsConnector;
 use hyper_util::{
-    client::legacy::{Client, connect::HttpConnector},
+    client::legacy::{connect::HttpConnector, Client},
     rt::TokioExecutor,
 };
 

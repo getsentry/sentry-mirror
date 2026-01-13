@@ -1,7 +1,7 @@
 use crate::Args;
 use figment::{
-    Figment, Metadata, Profile, Provider,
     providers::{Env, Format, Yaml},
+    Figment, Metadata, Profile, Provider,
 };
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;

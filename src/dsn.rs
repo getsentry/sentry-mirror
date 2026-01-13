@@ -127,7 +127,10 @@ pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
                 None => None,
             })
             .map(|outbound_target| DsnTarget {
-                dsn: outbound_target.dsn.parse::<Dsn>().expect("Invalid outbound DSN"),
+                dsn: outbound_target
+                    .dsn
+                    .parse::<Dsn>()
+                    .expect("Invalid outbound DSN"),
                 filter: outbound_target.filter.clone(),
             })
             .collect::<Vec<DsnTarget>>();

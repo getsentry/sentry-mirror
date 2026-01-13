@@ -75,8 +75,7 @@ pub fn make_outbound_request(
     builder
 }
 
-
-fn copy_envelope_body(bytes: &[u8], filter: &[String]) -> Vec<u8> {
+fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Vec<u8> {
     // If filter is empty, return copy of all bytes
     if filter.is_empty() {
         return bytes.to_owned();
@@ -86,7 +85,7 @@ fn copy_envelope_body(bytes: &[u8], filter: &[String]) -> Vec<u8> {
     let mut body_chunks = bytes.split(|&x| x == b'\n');
 
     // Iterate over blocks in envelope
-    while let Some(b) = body_chunks.next() { 
+    while let Some(b) = body_chunks.next() {
         let header_slice = b;
 
         let header_str = match String::from_utf8(header_slice.to_vec()) {
@@ -105,7 +104,10 @@ fn copy_envelope_body(bytes: &[u8], filter: &[String]) -> Vec<u8> {
             }
         };
 
-        let event_type = header_json.get("type").and_then(|v| v.as_str()).unwrap_or("");
+        let event_type = header_json
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
         let data_chunk = match body_chunks.next() {
             Some(d) => d,
             None => {
@@ -163,7 +165,7 @@ pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, filter: &[String]) -> 
 
     let header_line = Bytes::from(json_header.to_string());
     let envelope_body = match body_chunks.next() {
-        Some(c) => copy_envelope_body(c, filter),
+        Some(c) => build_envelope_body(c, filter),
         None => return None,
     };
     let new_body =
@@ -776,7 +778,7 @@ mod tests {
     }
 
     #[test]
-    fn test_copy_envelope_body_empty_filter() {
+    fn test_build_envelope_body_empty_filter() {
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
@@ -786,13 +788,16 @@ mod tests {
         body.push(b'\n');
 
         let filter: Vec<String> = vec![];
-        let result = copy_envelope_body(&body, &filter);
+        let result = build_envelope_body(&body, &filter);
 
-        assert_eq!(result, body, "Empty filter should return all bytes unchanged");
+        assert_eq!(
+            result, body,
+            "Empty filter should return all bytes unchanged"
+        );
     }
 
     #[test]
-    fn test_copy_envelope_body_with_filter() {
+    fn test_build_envelope_body_with_filter() {
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
@@ -802,7 +807,7 @@ mod tests {
         body.push(b'\n');
 
         let filter = vec!["event".to_string()];
-        let result = copy_envelope_body(&body, &filter);
+        let result = build_envelope_body(&body, &filter);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");

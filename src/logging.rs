@@ -2,11 +2,11 @@ use sentry::{integrations::tracing::EventFilter, types::Dsn};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::str::FromStr;
-use tracing_subscriber::Layer;
 use tracing_subscriber::filter::EnvFilter;
 use tracing_subscriber::prelude::*;
+use tracing_subscriber::Layer;
 
-use crate::config::{ConfigData, get_version};
+use crate::config::{get_version, ConfigData};
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
