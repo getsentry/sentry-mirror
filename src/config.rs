@@ -24,12 +24,12 @@ pub enum OutboundConfig {
     Detailed {
         dsn: String,
         categories: Option<Vec<String>>,
-        #[serde(default = "default_multiply")]
-        multiply: usize,
+        #[serde(default = "default_multiplier")]
+        multiplier: usize,
     },
 }
 
-fn default_multiply() -> usize {
+fn default_multiplier() -> usize {
     1
 }
 
@@ -153,12 +153,12 @@ mod tests {
 
     #[test]
     fn test_outbound_config_mult_optional() {
-        // Test that multiply is optional and defaults to 1 when not specified
+        // Test that multiplier is optional and defaults to 1 when not specified
         let json = r#"{"dsn": "https://key@sentry.io/123", "categories": ["event"]}"#;
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories, multiply } => {
+            OutboundConfig::Detailed { dsn, categories, multiplier } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(categories, Some(vec!["event".to_string()]));
                 assert_eq!(multiply, 1, "multiply should default to 1 when not specified");

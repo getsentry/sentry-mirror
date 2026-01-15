@@ -79,7 +79,7 @@ pub fn make_outbound_request(
 fn build_envelope_body(bytes: &[u8], categories: &[String]) -> Option<Vec<u8>> {
     let mut output = Vec::with_capacity(bytes.len());
 
-    // If categories is empty, return copy of all bytes repeated multiply times
+    // If categories is empty, return copy of all bytes repeated multiplier times
     if categories.is_empty() {
         output.extend_from_slice(bytes);
         return Some(output);
@@ -158,7 +158,7 @@ fn build_envelope_body(bytes: &[u8], categories: &[String]) -> Option<Vec<u8>> {
 ///
 /// - Replace the DSN key in the envelope header with the outbound DSN.
 /// - Will filter envelope items based on the categories.
-/// - Will multiply matching item types based on multiply. Each copy
+/// - Will multiply matching item types based on multiplier. Each copy
 ///   will have a unique id generated for it to preserve the projectid + eventid
 ///   uniqueness constraints
 ///
@@ -167,7 +167,7 @@ pub fn modify_envelope(
     body: &Bytes,
     outbound: &dsn::Dsn,
     categories: &[String],
-    multiply: usize,
+    multiplier: usize,
 ) -> Option<Bytes> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
@@ -209,11 +209,11 @@ pub fn modify_envelope(
         None => return None,
     };
 
-    // When multiply > 1, create multiple complete envelopes, each with a unique event_id
-    if multiply > 1 {
-        let mut output = Vec::with_capacity(body.len() * multiply);
+    // When multiplier > 1, create multiple complete envelopes, each with a unique event_id
+    if multiplier > 1 {
+        let mut output = Vec::with_capacity(body.len() * multiplier);
 
-        for _ in 0..multiply {
+        for _ in 0..multiplier {
             // Generate a unique event_id for each copy, as eventid + project must be unique.
             let new_event_id = Uuid::new_v4().to_string();
             let mut header_copy = json_header.clone();
@@ -965,7 +965,7 @@ mod tests {
     }
 
     #[test]
-    fn test_modify_envelope_multiply_unique_event_ids() {
+    fn test_modify_envelope_multipler_unique_event_ids() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -1031,7 +1031,7 @@ mod tests {
     }
 
     #[test]
-    fn test_modify_envelope_multiply_with_categories() {
+    fn test_modify_envelope_multiplier_with_categories() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -1061,7 +1061,7 @@ mod tests {
         let envelope_header_count = body_str.lines().filter(|line| line.contains("event_id")).count();
         assert_eq!(
             envelope_header_count, 2,
-            "Should have 2 envelope headers when multiply=2"
+            "Should have 2 envelope headers when multiplier=2"
         );
 
         // Count event items (lines containing "type\":\"event")
@@ -1071,7 +1071,7 @@ mod tests {
             .count();
         assert_eq!(
             event_item_count, 2,
-            "Should have 2 event items when multiply=2 with event category"
+            "Should have 2 event items when multiplier=2 with event category"
         );
 
         // Verify attachment is not included (categories filter)
