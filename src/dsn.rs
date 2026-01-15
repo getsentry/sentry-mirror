@@ -102,7 +102,7 @@ impl FromStr for Dsn {
 pub struct OutboundEntry {
     pub dsn: Dsn,
     pub categories: Vec<String>,
-    pub multiply: usize,
+    pub multiplier: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -126,14 +126,14 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
             .iter()
             .filter_map(|item| match item {
                 OutboundConfig::Dsn(opt) => opt.as_ref().map(|dsn_str| (dsn_str.clone(), vec![], 1)),
-                OutboundConfig::Detailed { dsn, categories, multiply } => {
+                OutboundConfig::Detailed { dsn, categories, multiplier } => {
                     let categories = categories.clone().unwrap_or(vec![]);
-                    Some((dsn.clone(), categories, *multiply))
+                    Some((dsn.clone(), categories, *multiplier))
                 }
             })
-            .map(|(outbound_str, categories, multiply)| {
+            .map(|(outbound_str, categories, multiplier)| {
                 let dsn = outbound_str.parse::<Dsn>().expect("Invalid outbound DSN");
-                OutboundEntry { dsn, categories, multiply }
+                OutboundEntry { dsn, categories, multiplier }
             })
             .collect::<Vec<OutboundEntry>>();
         keymap.insert(
@@ -155,6 +155,12 @@ pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
         out.push_str("Outbound:\n");
         for outbound in keyring.outbound.iter() {
             out.push_str(format!("- {}\n", outbound.dsn).as_ref());
+            if !outbound.categories.is_empty() {
+                out.push_str(format!("  categories: {:?}\n", outbound.categories).as_ref());
+            }
+            if outbound.multiplier > 1 {
+                out.push_str(format!("  multiplier: {}\n", outbound.multiplier).as_ref());
+            }
         }
     }
     out
@@ -284,12 +290,12 @@ mod tests {
                 OutboundConfig::Detailed {
                     dsn: "https://ghijkl@sentry.io/567".to_string(),
                     categories: Some(vec!["event".to_string(), "transaction".to_string()]),
-                    multiply: 1,
+                    multiplier: 1,
                 },
                 OutboundConfig::Detailed {
                     dsn: "https://mnopq@sentry.io/890".to_string(),
                     categories: Some(vec!["replay".to_string()]),
-                    multiply: 1,
+                    multiplier: 1,
                 },
             ],
         }];
@@ -314,7 +320,7 @@ mod tests {
                 OutboundConfig::Detailed {
                     dsn: "https://key333@sentry.io/3333".to_string(),
                     categories: Some(vec!["error".to_string(), "span".to_string()]),
-                    multiply: 1,
+                    multiplier: 1,
                 },
             ],
         }];

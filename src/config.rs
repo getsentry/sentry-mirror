@@ -161,7 +161,7 @@ mod tests {
             OutboundConfig::Detailed { dsn, categories, multiplier } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(categories, Some(vec!["event".to_string()]));
-                assert_eq!(multiply, 1, "multiply should default to 1 when not specified");
+                assert_eq!(multiplier, 1, "multiply should default to 1 when not specified");
             }
             _ => panic!("Expected Detailed variant"),
         }
@@ -169,14 +169,14 @@ mod tests {
 
     #[test]
     fn test_outbound_config_mult_specified() {
-        // Test that multiply can be explicitly set
-        let json = r#"{"dsn": "https://key@sentry.io/123", "categories": [], "multiply": 5}"#;
+        // Test that multiplier can be explicitly set
+        let json = r#"{"dsn": "https://key@sentry.io/123", "categories": [], "multiplier": 5}"#;
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories: _, multiply } => {
+            OutboundConfig::Detailed { dsn, categories: _, multiplier } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
-                assert_eq!(multiply, 5, "multiply should be 5 when explicitly specified");
+                assert_eq!(multiplier, 5, "multiply should be 5 when explicitly specified");
             }
             _ => panic!("Expected Detailed variant"),
         }
@@ -184,15 +184,15 @@ mod tests {
 
     #[test]
     fn test_outbound_config_only_dsn() {
-        // Test that only dsn is required, categories and multiply are optional
+        // Test that only dsn is required, categories and multiplier are optional
         let json = r#"{"dsn": "https://key@sentry.io/123"}"#;
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories, multiply } => {
+            OutboundConfig::Detailed { dsn, categories, multiplier } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(categories, None, "categories should be None when not specified");
-                assert_eq!(multiply, 1, "multiply should default to 1");
+                assert_eq!(multiplier, 1, "multiply should default to 1");
             }
             _ => panic!("Expected Detailed variant"),
         }

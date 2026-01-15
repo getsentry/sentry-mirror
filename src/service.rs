@@ -145,7 +145,7 @@ where
                 &body_bytes,
                 &outbound.dsn,
                 &outbound.categories,
-                outbound.multiply,
+                outbound.multiplier,
             ) {
                 Some(new_body) => new_body,
                 None => body_bytes.clone(),
