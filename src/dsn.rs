@@ -117,12 +117,7 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
 
     // NOTE: This loop exists for backward compatibility with older config files.
     for item in &config.keys {
-        let inbound_dsn = match item
-            .inbound
-            .as_ref()
-            .expect("Missing inbound key")
-            .parse::<Dsn>()
-        {
+        let inbound_dsn = match item.inbound.parse::<Dsn>() {
             Ok(r) => r,
             Err(e) => panic!("{:?}", e),
         };
@@ -255,7 +250,7 @@ mod tests {
     fn make_key_map_with_key_rings_only() {
         let mut config = make_test_config();
         config.keys = vec![ConfigKeyPair {
-            inbound: Some("https://abcdef@sentry.io/1234".to_string()),
+            inbound: "https://abcdef@sentry.io/1234".to_string(),
             outbound: vec![
                 OutboundConfig::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
                 OutboundConfig::Dsn(Some("https://mnopq@sentry.io/890".to_string())),
@@ -284,7 +279,7 @@ mod tests {
     fn make_key_map_with_rules_only() {
         let mut config = make_test_config();
         config.keys = vec![ConfigKeyPair {
-            inbound: Some("https://abcdef@sentry.io/1234".to_string()),
+            inbound: "https://abcdef@sentry.io/1234".to_string(),
             outbound: vec![
                 OutboundConfig::Detailed {
                     dsn: "https://ghijkl@sentry.io/567".to_string(),
@@ -311,7 +306,7 @@ mod tests {
     fn make_key_map_with_mixed_outbound() {
         let mut config = make_test_config();
         config.keys = vec![ConfigKeyPair {
-            inbound: Some("https://key111@sentry.io/1111".to_string()),
+            inbound: "https://key111@sentry.io/1111".to_string(),
             outbound: vec![
                 OutboundConfig::Dsn(Some("https://key222@sentry.io/2222".to_string())),
                 OutboundConfig::Detailed {
@@ -420,7 +415,7 @@ mod tests {
     fn test_format_key_map() {
         let mut config = make_test_config();
         config.keys = vec![ConfigKeyPair {
-            inbound: Some("https://abcdef@sentry.io/1234".to_string()),
+            inbound: "https://abcdef@sentry.io/1234".to_string(),
             outbound: vec![
                 OutboundConfig::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
                 OutboundConfig::Dsn(Some("https://mnopq@sentry.io/890".to_string())),

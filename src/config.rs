@@ -32,7 +32,7 @@ pub enum OutboundConfig {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ConfigKeyPair {
     /// Inbound keys are virtual DSNs that the mirror will accept traffic on
-    pub inbound: Option<String>,
+    pub inbound: String,
 
     /// One or more upstream DSN keys that the mirror will forward traffic to.
     pub outbound: Vec<OutboundConfig>,

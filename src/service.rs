@@ -262,18 +262,14 @@ mod tests {
             verbose: true,
             keys: vec![
                 ConfigKeyPair {
-                    inbound: Some(
-                        "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
-                    ),
+                    inbound: "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
                     outbound: vec![
                         OutboundConfig::Dsn(Some("https://aaaaaaaa123456789012345678901234@target.example.com/5678".to_string())),
                         OutboundConfig::Dsn(Some("https://bbbbbbbb234567890123456789012345@other.example.com/9012".to_string())),
                     ],
                 },
                 ConfigKeyPair {
-                    inbound: Some(
-                        "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
-                    ),
+                    inbound: "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
                     outbound: vec![
                         OutboundConfig::Dsn(Some("https://bbbbbb12345678901234567890123456@target.example.com/7890".to_string())),
                     ],
