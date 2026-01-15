@@ -10,44 +10,38 @@ use std::fs;
 
 use crate::logging::LogFormat;
 
+/// Configuration data for Outbound destination DSNs.
+/// Each outbound DSN can optionally include a list of
+/// `categories` that the DSN is interested in.Envelope
+/// items that do not match an outbound key's `categories`
+/// will be removed from requests sent to that DSN.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(default)]
-pub struct OutboundTarget {
-    pub dsn: String,
-    pub filter: Vec<String>,
-    pub mult: usize,
+#[serde(untagged)]
+pub enum OutboundConfig {
+    /// Shorthand: just a DSN string
+    Dsn(Option<String>),
+    // DSNs can also have additional settings defined for them using a dictionary
+    Detailed {
+        dsn: String,
+        categories: Option<Vec<String>>,
+        #[serde(default = "default_mult")]
+        mult: usize,
+    },
 }
 
-impl Default for OutboundTarget {
-    fn default() -> Self {
-        Self {
-            dsn: String::new(),
-            filter: vec![],
-            mult: 1,
-        }
-    }
-}
-
-/// A set of inbound and outbound keys.
-/// Requests sent to an inbound DSN are mirrored to all outbound DSNs
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Rule {
-    /// Inbound keys are virtual DSNs that the mirror will accept traffic on
-    pub inbound: Option<String>,
-
-    /// One or more upstream DSN keys that the mirror will forward traffic to.
-    pub outbound: Vec<Option<OutboundTarget>>,
+fn default_mult() -> usize {
+    1
 }
 
 /// A set of inbound and outbound keys.
 /// Requests sent to an inbound DSN are mirrored to all outbound DSNs
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KeyRing {
+pub struct ConfigKeyPair {
     /// Inbound keys are virtual DSNs that the mirror will accept traffic on
-    pub inbound: Option<String>,
+    pub inbound: String,
 
     /// One or more upstream DSN keys that the mirror will forward traffic to.
-    pub outbound: Vec<Option<String>>,
+    pub outbound: Vec<OutboundConfig>,
 }
 
 #[derive(Debug, PartialEq, Serialize, Deserialize)]
@@ -85,10 +79,7 @@ pub struct ConfigData {
     pub verbose: bool,
 
     /// A list of keypairs that the server will handle.
-    pub keys: Vec<KeyRing>,
-
-    // A list of mirroring rules that the server will handle
-    pub rules: Vec<Rule>,
+    pub keys: Vec<ConfigKeyPair>,
 
     /// Set to false to skip rewriting envelope headers.
     /// Disaling envelope header modification makes mirroring more efficient,
@@ -121,7 +112,6 @@ impl Default for ConfigData {
             port: 3000,
             verbose: false,
             keys: vec![],
-            rules: vec![],
             modify_envelope: true,
         }
     }
@@ -162,40 +152,49 @@ mod tests {
     use super::*;
 
     #[test]
-    fn test_outbound_target_mult_optional() {
+    fn test_outbound_config_mult_optional() {
         // Test that mult is optional and defaults to 1 when not specified
-        let json = r#"{"dsn": "https://key@sentry.io/123", "filter": ["event"]}"#;
-        let target: OutboundTarget = serde_json::from_str(json).unwrap();
+        let json = r#"{"dsn": "https://key@sentry.io/123", "categories": ["event"]}"#;
+        let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
-        assert_eq!(target.dsn, "https://key@sentry.io/123");
-        assert_eq!(target.filter, vec!["event"]);
-        assert_eq!(
-            target.mult, 1,
-            "mult should default to 1 when not specified"
-        );
+        match config {
+            OutboundConfig::Detailed { dsn, categories, mult } => {
+                assert_eq!(dsn, "https://key@sentry.io/123");
+                assert_eq!(categories, Some(vec!["event".to_string()]));
+                assert_eq!(mult, 1, "mult should default to 1 when not specified");
+            }
+            _ => panic!("Expected Detailed variant"),
+        }
     }
 
     #[test]
-    fn test_outbound_target_mult_specified() {
+    fn test_outbound_config_mult_specified() {
         // Test that mult can be explicitly set
-        let json = r#"{"dsn": "https://key@sentry.io/123", "filter": [], "mult": 5}"#;
-        let target: OutboundTarget = serde_json::from_str(json).unwrap();
+        let json = r#"{"dsn": "https://key@sentry.io/123", "categories": [], "mult": 5}"#;
+        let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
-        assert_eq!(target.dsn, "https://key@sentry.io/123");
-        assert_eq!(target.mult, 5, "mult should be 5 when explicitly specified");
+        match config {
+            OutboundConfig::Detailed { dsn, categories: _, mult } => {
+                assert_eq!(dsn, "https://key@sentry.io/123");
+                assert_eq!(mult, 5, "mult should be 5 when explicitly specified");
+            }
+            _ => panic!("Expected Detailed variant"),
+        }
     }
 
     #[test]
-    fn test_outbound_target_only_dsn() {
-        // Test that only dsn is required, filter and mult are optional
+    fn test_outbound_config_only_dsn() {
+        // Test that only dsn is required, categories and mult are optional
         let json = r#"{"dsn": "https://key@sentry.io/123"}"#;
-        let target: OutboundTarget = serde_json::from_str(json).unwrap();
+        let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
-        assert_eq!(target.dsn, "https://key@sentry.io/123");
-        assert!(
-            target.filter.is_empty(),
-            "filter should default to empty vec"
-        );
-        assert_eq!(target.mult, 1, "mult should default to 1");
+        match config {
+            OutboundConfig::Detailed { dsn, categories, mult } => {
+                assert_eq!(dsn, "https://key@sentry.io/123");
+                assert_eq!(categories, None, "categories should be None when not specified");
+                assert_eq!(mult, 1, "mult should default to 1");
+            }
+            _ => panic!("Expected Detailed variant"),
+        }
     }
 }

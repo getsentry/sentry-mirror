@@ -1,0 +1,22 @@
+repos:
+  - repo: local
+    hooks:
+      - id: rustfmt
+        name: rustfmt
+        entry: rustfmt --edition 2024 --check
+        language: system
+        types: [rust]
+
+      - id: clippy
+        name: clippy
+        entry: cargo clippy --workspace --all-features --tests -- -D clippy::all
+        language: system
+        types: [rust]
+        pass_filenames: false
+
+      - id: cargo-test
+        name: cargo test
+        entry: cargo test
+        language: system
+        types: [rust]
+        pass_filenames: false

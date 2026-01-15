@@ -144,7 +144,7 @@ where
             match request::modify_envelope(
                 &body_bytes,
                 &outbound.dsn,
-                &outbound.filter,
+                &outbound.categories,
                 outbound.mult,
             ) {
                 Some(new_body) => new_body,
@@ -246,7 +246,7 @@ mod tests {
 
     use super::{full, handle_request};
     use crate::{
-        config::{ConfigData, OutboundTarget, Rule},
+        config::{ConfigData, ConfigKeyPair, OutboundConfig},
         logging::LogFormat,
         state::AppState,
     };
@@ -265,37 +265,28 @@ mod tests {
             ip: "127.0.0.1".into(),
             port: 3000,
             verbose: true,
-            keys: vec![],
-            rules: vec![
-                Rule {
-                    inbound: Some(
-                        "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
-                    ),
+            keys: vec![
+                ConfigKeyPair {
+                    inbound: "https://eeeeee12345678901234567890123456@localhost:3000/1234"
+                        .to_string(),
                     outbound: vec![
-                        Some(OutboundTarget {
-                            dsn: "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
+                        OutboundConfig::Dsn(Some(
+                            "https://aaaaaaaa123456789012345678901234@target.example.com/5678"
                                 .to_string(),
-                            filter: vec![],
-                            mult: 1,
-                        }),
-                        Some(OutboundTarget {
-                            dsn: "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
+                        )),
+                        OutboundConfig::Dsn(Some(
+                            "https://bbbbbbbb234567890123456789012345@other.example.com/9012"
                                 .to_string(),
-                            filter: vec![],
-                            mult: 1,
-                        }),
+                        )),
                     ],
                 },
-                Rule {
-                    inbound: Some(
-                        "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
-                    ),
-                    outbound: vec![Some(OutboundTarget {
-                        dsn: "https://bbbbbb12345678901234567890123456@target.example.com/7890"
+                ConfigKeyPair {
+                    inbound: "https://ddddddd1234567890123456789012345@localhost:3000/3456"
+                        .to_string(),
+                    outbound: vec![OutboundConfig::Dsn(Some(
+                        "https://bbbbbb12345678901234567890123456@target.example.com/7890"
                             .to_string(),
-                        filter: vec![],
-                        mult: 1,
-                    })],
+                    ))],
                 },
             ],
             modify_envelope: true,

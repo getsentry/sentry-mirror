@@ -75,11 +75,11 @@ pub fn make_outbound_request(
     builder
 }
 
-fn build_envelope_body(bytes: &[u8], filter: &[String], mult: usize) -> Option<Vec<u8>> {
+fn build_envelope_body(bytes: &[u8], categories: &[String], mult: usize) -> Option<Vec<u8>> {
     let mut output = Vec::with_capacity(bytes.len() * mult);
 
-    // If filter is empty, return copy of all bytes repeated mult times
-    if filter.is_empty() {
+    // If categories is empty, return copy of all bytes repeated mult times
+    if categories.is_empty() {
         for _ in 0..mult {
             output.extend_from_slice(bytes);
         }
@@ -140,7 +140,7 @@ fn build_envelope_body(bytes: &[u8], filter: &[String], mult: usize) -> Option<V
 
         let data_chunk = &bytes[data_start..data_end];
 
-        if filter.contains(&event_type.to_string()) {
+        if categories.contains(&event_type.to_string()) {
             for _ in 0..mult {
                 output.extend_from_slice(header_slice);
                 output.push(b'\n');
@@ -160,7 +160,7 @@ fn build_envelope_body(bytes: &[u8], filter: &[String], mult: usize) -> Option<V
 pub fn modify_envelope(
     body: &Bytes,
     outbound: &dsn::Dsn,
-    filter: &[String],
+    categories: &[String],
     mult: usize,
 ) -> Option<Bytes> {
     // Split the envelope header off if possible
@@ -200,7 +200,7 @@ pub fn modify_envelope(
 
     let header_line = Bytes::from(json_header.to_string());
     let envelope_body = match body_chunks.next() {
-        Some(c) => build_envelope_body(c, filter, mult)?,
+        Some(c) => build_envelope_body(c, categories, mult)?,
         None => return None,
     };
     let new_body =
@@ -813,7 +813,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_envelope_body_empty_filter() {
+    fn test_build_envelope_body_empty_categories() {
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
@@ -822,19 +822,19 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let filter: Vec<String> = vec![];
-        let result = build_envelope_body(&body, &filter, 1);
+        let categories: Vec<String> = vec![];
+        let result = build_envelope_body(&body, &categories, 1);
 
         assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
             result.unwrap(),
             body,
-            "Empty filter should return all bytes unchanged"
+            "Empty categories should return all bytes unchanged"
         );
     }
 
     #[test]
-    fn test_build_envelope_body_with_filter() {
+    fn test_build_envelope_body_with_categories() {
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
@@ -843,8 +843,8 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let filter = vec!["event".to_string()];
-        let result = build_envelope_body(&body, &filter, 1);
+        let categories = vec!["event".to_string()];
+        let result = build_envelope_body(&body, &categories, 1);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
@@ -876,8 +876,8 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let filter = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &filter, 1);
+        let categories = vec!["attachment".to_string()];
+        let result = build_envelope_body(&body, &categories, 1);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(attachment_header.as_bytes());
@@ -906,8 +906,8 @@ mod tests {
         body.extend_from_slice(&binary_data);
         body.push(b'\n');
 
-        let filter = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &filter, 1);
+        let categories = vec!["attachment".to_string()];
+        let result = build_envelope_body(&body, &categories, 1);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(binary_header.as_bytes());
@@ -926,15 +926,15 @@ mod tests {
     }
 
     #[test]
-    fn test_build_envelope_body_mult_no_filter() {
-        // When mult > 1 and no filter, entire body should be repeated N times
+    fn test_build_envelope_body_mult_no_categories() {
+        // When mult > 1 and no categories, entire body should be repeated N times
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let filter: Vec<String> = vec![];
-        let result = build_envelope_body(&body, &filter, 3);
+        let categories: Vec<String> = vec![];
+        let result = build_envelope_body(&body, &categories, 3);
 
         let mut expected = Vec::new();
         for _ in 0..3 {
@@ -947,13 +947,13 @@ mod tests {
         assert_eq!(
             result.unwrap(),
             expected,
-            "Empty filter with mult=3 should repeat entire body 3 times"
+            "Empty categories with mult=3 should repeat entire body 3 times"
         );
     }
 
     #[test]
-    fn test_build_envelope_body_mult_with_filter() {
-        // When mult > 1 and filter present, each matching block should be repeated N times
+    fn test_build_envelope_body_mult_with_categories() {
+        // When mult > 1 and categories present, each matching block should be repeated N times
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
@@ -962,8 +962,8 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let filter = vec!["event".to_string()];
-        let result = build_envelope_body(&body, &filter, 2);
+        let categories = vec!["event".to_string()];
+        let result = build_envelope_body(&body, &categories, 2);
 
         let mut expected = Vec::new();
         // Event block should be repeated 2 times
@@ -977,7 +977,7 @@ mod tests {
         assert_eq!(
             result.unwrap(),
             expected,
-            "Filter with mult=2 should repeat each matching block 2 times"
+            "Categories with mult=2 should repeat each matching block 2 times"
         );
     }
 
