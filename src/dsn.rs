@@ -7,7 +7,7 @@ use hyper::{HeaderMap, Uri};
 use regex::Regex;
 use url::Url;
 
-use crate::config::ConfigData;
+use crate::config::{ConfigData, OutboundConfig};
 
 /// DSN components parsed from a DSN string
 #[derive(Debug, Clone, PartialEq)]
@@ -98,16 +98,16 @@ impl FromStr for Dsn {
     }
 }
 
-#[derive(Debug, PartialEq)]
-pub struct DsnTarget {
+#[derive(Debug, PartialEq, Clone)]
+pub struct OutboundEntry {
     pub dsn: Dsn,
-    pub filter: Vec<String>,
+    pub categories: Vec<String>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct DsnKeyRing {
     pub inbound: Dsn,
-    pub outbound: Vec<DsnTarget>,
+    pub outbound: Vec<OutboundEntry>,
 }
 
 /// Convert a list of Config data keys into Dsn's that we can use
@@ -130,14 +130,17 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
             .outbound
             .iter()
             .filter_map(|item| match item {
-                Some(i) => Some(i),
-                None => None,
+                OutboundConfig::Dsn(opt) => opt.as_ref().map(|dsn_str| (dsn_str.clone(), vec![])),
+                OutboundConfig::Detailed { dsn, categories } => {
+                    let categories = categories.clone().unwrap_or(vec![]);
+                    Some((dsn.clone(), categories))
+                }
             })
-            .map(|outbound_str| DsnTarget {
-                dsn: outbound_str.parse::<Dsn>().expect("Invalid outbound DSN"),
-                filter: vec![],
+            .map(|(outbound_str, categories)| {
+                let dsn = outbound_str.parse::<Dsn>().expect("Invalid outbound DSN");
+                OutboundEntry {dsn, categories}
             })
-            .collect::<Vec<DsnTarget>>();
+            .collect::<Vec<OutboundEntry>>();
         keymap.insert(
             inbound_dsn.key_id(),
             DsnKeyRing {
@@ -147,39 +150,6 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
         );
     }
 
-    for item in &config.rules {
-        let inbound_dsn = match item
-            .inbound
-            .as_ref()
-            .expect("Missing inbound key")
-            .parse::<Dsn>()
-        {
-            Ok(r) => r,
-            Err(e) => panic!("{:?}", e),
-        };
-        let outbound = item
-            .outbound
-            .iter()
-            .filter_map(|item| match item {
-                Some(i) => Some(i),
-                None => None,
-            })
-            .map(|outbound_target| DsnTarget {
-                dsn: outbound_target
-                    .dsn
-                    .parse::<Dsn>()
-                    .expect("Invalid outbound DSN"),
-                filter: outbound_target.filter.clone(),
-            })
-            .collect::<Vec<DsnTarget>>();
-        keymap.insert(
-            inbound_dsn.key_id(),
-            DsnKeyRing {
-                inbound: inbound_dsn,
-                outbound,
-            },
-        );
-    }
     keymap
 }
 
@@ -230,7 +200,7 @@ pub fn from_request(uri: &Uri, headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ConfigData, KeyRing, OutboundTarget, Rule};
+    use crate::config::{ConfigData, KeyRing, OutboundConfig};
     use crate::logging::LogFormat;
 
     fn make_test_config() -> ConfigData {
@@ -246,7 +216,6 @@ mod tests {
             port: 3000,
             verbose: true,
             keys: vec![],
-            rules: vec![],
             modify_envelope: true,
         }
     }
@@ -288,8 +257,8 @@ mod tests {
         config.keys = vec![KeyRing {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
-                Some("https://ghijkl@sentry.io/567".to_string()),
-                Some("https://mnopq@sentry.io/890".to_string()),
+                OutboundConfig::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
+                OutboundConfig::Dsn(Some("https://mnopq@sentry.io/890".to_string())),
             ],
         }];
         let keymap = make_key_map(&config);
@@ -299,32 +268,32 @@ mod tests {
         assert_eq!(value.outbound.len(), 2);
         assert_eq!(value.outbound[0].dsn.public_key, "ghijkl");
         assert_eq!(
-            value.outbound[0].filter.len(),
+            value.outbound[0].categories.len(),
             0,
-            "KeyRing should have empty filter"
+            "KeyRing should have no categories"
         );
         assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
         assert_eq!(
-            value.outbound[1].filter.len(),
+            value.outbound[1].categories.len(),
             0,
-            "KeyRing should have empty filter"
+            "KeyRing should have no categories"
         );
     }
 
     #[test]
     fn make_key_map_with_rules_only() {
         let mut config = make_test_config();
-        config.rules = vec![Rule {
+        config.keys = vec![KeyRing {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
-                Some(OutboundTarget {
+                OutboundConfig::Detailed {
                     dsn: "https://ghijkl@sentry.io/567".to_string(),
-                    filter: vec!["event".to_string(), "transaction".to_string()],
-                }),
-                Some(OutboundTarget {
+                    categories: Some(vec!["event".to_string(), "transaction".to_string()]),
+                },
+                OutboundConfig::Detailed {
                     dsn: "https://mnopq@sentry.io/890".to_string(),
-                    filter: vec!["replay".to_string()],
-                }),
+                    categories: Some(vec!["replay".to_string()]),
+                },
             ],
         }];
         let keymap = make_key_map(&config);
@@ -333,45 +302,34 @@ mod tests {
         assert_eq!(value.inbound.public_key, "abcdef");
         assert_eq!(value.outbound.len(), 2);
         assert_eq!(value.outbound[0].dsn.public_key, "ghijkl");
-        assert_eq!(value.outbound[0].filter, vec!["event", "transaction"]);
+        assert_eq!(value.outbound[0].categories, vec!["event", "transaction"]);
         assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
-        assert_eq!(value.outbound[1].filter, vec!["replay"]);
+        assert_eq!(value.outbound[1].categories, vec!["replay"]);
     }
 
     #[test]
-    fn make_key_map_with_both_keys_and_rules() {
+    fn make_key_map_with_mixed_outbound() {
         let mut config = make_test_config();
         config.keys = vec![KeyRing {
             inbound: Some("https://key111@sentry.io/1111".to_string()),
-            outbound: vec![Some("https://key222@sentry.io/2222".to_string())],
-        }];
-        config.rules = vec![Rule {
-            inbound: Some("https://rule333@sentry.io/3333".to_string()),
-            outbound: vec![Some(OutboundTarget {
-                dsn: "https://rule444@sentry.io/4444".to_string(),
-                filter: vec!["event".to_string()],
-            })],
+            outbound: vec![
+                OutboundConfig::Dsn(Some("https://key222@sentry.io/2222".to_string())),
+                OutboundConfig::Detailed {
+                    dsn: "https://key333@sentry.io/3333".to_string(),
+                    categories: Some(vec!["error".to_string(), "span".to_string()]),
+                }
+            ],
         }];
         let keymap = make_key_map(&config);
-        assert_eq!(
-            keymap.len(),
-            2,
-            "Should have entries from both keys and rules"
-        );
 
-        // Check KeyRing entry
+        // Check Dsn entry
         let key_value = keymap.get("key111").expect("Should have KeyRing entry");
         assert_eq!(key_value.inbound.public_key, "key111");
-        assert_eq!(key_value.outbound.len(), 1);
+        assert_eq!(key_value.outbound.len(), 2);
         assert_eq!(key_value.outbound[0].dsn.public_key, "key222");
-        assert_eq!(key_value.outbound[0].filter.len(), 0);
-
-        // Check Rule entry
-        let rule_value = keymap.get("rule333").expect("Should have Rule entry");
-        assert_eq!(rule_value.inbound.public_key, "rule333");
-        assert_eq!(rule_value.outbound.len(), 1);
-        assert_eq!(rule_value.outbound[0].dsn.public_key, "rule444");
-        assert_eq!(rule_value.outbound[0].filter, vec!["event"]);
+        assert_eq!(key_value.outbound[0].categories.len(), 0);
+        assert_eq!(key_value.outbound[1].dsn.public_key, "key333");
+        assert_eq!(key_value.outbound[1].categories, vec!["error", "span"]);
     }
 
     #[test]
@@ -461,17 +419,11 @@ mod tests {
     #[test]
     fn test_format_key_map() {
         let mut config = make_test_config();
-        config.rules = vec![Rule {
+        config.keys = vec![KeyRing {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
-                Some(OutboundTarget {
-                    dsn: "https://ghijkl@sentry.io/567".to_string(),
-                    filter: vec![],
-                }),
-                Some(OutboundTarget {
-                    dsn: "https://mnopq@sentry.io/890".to_string(),
-                    filter: vec![],
-                }),
+                OutboundConfig::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
+                OutboundConfig::Dsn(Some("https://mnopq@sentry.io/890".to_string())),
             ],
         }];
         let key_map = make_key_map(&config);
