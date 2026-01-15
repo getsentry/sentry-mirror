@@ -10,6 +10,7 @@ use serde_json::Value;
 use std::io::prelude::*;
 use std::time::Instant;
 use tracing::{debug, warn};
+use uuid::Uuid;
 
 use crate::config::ConfigData;
 use crate::dsn;
@@ -75,14 +76,12 @@ pub fn make_outbound_request(
     builder
 }
 
-fn build_envelope_body(bytes: &[u8], categories: &[String], multiply: usize) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(bytes.len() * multiply);
+fn build_envelope_body(bytes: &[u8], categories: &[String]) -> Option<Vec<u8>> {
+    let mut output = Vec::with_capacity(bytes.len());
 
     // If categories is empty, return copy of all bytes repeated multiply times
     if categories.is_empty() {
-        for _ in 0..multiply {
-            output.extend_from_slice(bytes);
-        }
+        output.extend_from_slice(bytes);
         return Some(output);
     }
 
@@ -141,12 +140,10 @@ fn build_envelope_body(bytes: &[u8], categories: &[String], multiply: usize) -> 
         let data_chunk = &bytes[data_start..data_end];
 
         if categories.contains(&event_type.to_string()) {
-            for _ in 0..multiply {
-                output.extend_from_slice(header_slice);
-                output.push(b'\n');
-                output.extend_from_slice(data_chunk);
-                output.push(b'\n');
-            }
+            output.extend_from_slice(header_slice);
+            output.push(b'\n');
+            output.extend_from_slice(data_chunk);
+            output.push(b'\n');
         }
 
         // Move to next block (skip past data and the trailing \n)
@@ -155,8 +152,17 @@ fn build_envelope_body(bytes: &[u8], categories: &[String], multiply: usize) -> 
     Some(output)
 }
 
-/// Replace the DSN key if it is found in the first line of the body
-/// as per the envelope specs https://develop.sentry.dev/sdk/envelopes/
+/// Mutate the envelope body based on the outbound key configuration:
+///
+/// Will do the following:
+///
+/// - Replace the DSN key in the envelope header with the outbound DSN.
+/// - Will filter envelope items based on the categories.
+/// - Will multiply matching item types based on multiply. Each copy
+///   will have a unique id generated for it to preserve the projectid + eventid
+///   uniqueness constraints
+///
+/// See the envelope specs https://develop.sentry.dev/sdk/envelopes/
 pub fn modify_envelope(
     body: &Bytes,
     outbound: &dsn::Dsn,
@@ -198,15 +204,43 @@ pub fn modify_envelope(
         return None;
     }
 
-    let header_line = Bytes::from(json_header.to_string());
-    let envelope_body = match body_chunks.next() {
-        Some(c) => build_envelope_body(c, categories, multiply)?,
+    let envelope_body_bytes = match body_chunks.next() {
+        Some(c) => c,
         None => return None,
     };
-    let new_body =
-        Bytes::from([header_line, Bytes::from("\n"), Bytes::from(envelope_body)].concat());
 
-    Some(new_body)
+    // When multiply > 1, create multiple complete envelopes, each with a unique event_id
+    if multiply > 1 {
+        let mut output = Vec::with_capacity(body.len() * multiply);
+
+        for _ in 0..multiply {
+            // Generate a unique event_id for each copy, as eventid + project must be unique.
+            let new_event_id = Uuid::new_v4().to_string();
+            let mut header_copy = json_header.clone();
+            header_copy["event_id"] = Value::String(new_event_id);
+
+            let envelope_body = match build_envelope_body(envelope_body_bytes, categories) {
+                Some(body) => body,
+                None => return None,
+            };
+
+            output.extend_from_slice(header_copy.to_string().as_bytes());
+            output.push(b'\n');
+            output.extend_from_slice(&envelope_body);
+        }
+
+        Some(Bytes::from(output))
+    } else {
+        let header_line = Bytes::from(json_header.to_string());
+        let envelope_body = match build_envelope_body(envelope_body_bytes, categories) {
+            Some(body) => body,
+            None => return None,
+        };
+        let new_body =
+            Bytes::from([header_line, Bytes::from("\n"), Bytes::from(envelope_body)].concat());
+
+        Some(new_body)
+    }
 }
 
 fn replace_public_key(target: &str, outbound: &dsn::Dsn) -> String {
@@ -823,7 +857,7 @@ mod tests {
         body.push(b'\n');
 
         let categories: Vec<String> = vec![];
-        let result = build_envelope_body(&body, &categories, 1);
+        let result = build_envelope_body(&body, &categories);
 
         assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
@@ -844,7 +878,7 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec!["event".to_string()];
-        let result = build_envelope_body(&body, &categories, 1);
+        let result = build_envelope_body(&body, &categories);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
@@ -877,7 +911,7 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &categories, 1);
+        let result = build_envelope_body(&body, &categories);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(attachment_header.as_bytes());
@@ -907,7 +941,7 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &categories, 1);
+        let result = build_envelope_body(&body, &categories);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(binary_header.as_bytes());
@@ -925,65 +959,126 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_build_envelope_body_mult_no_categories() {
-        // When mult > 1 and no categories, entire body should be repeated N times
-        let mut body = Vec::new();
-        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
-        body.extend_from_slice(b"test");
-        body.push(b'\n');
-
-        let categories: Vec<String> = vec![];
-        let result = build_envelope_body(&body, &categories, 3);
-
-        let mut expected = Vec::new();
-        for _ in 0..3 {
-            expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
-            expected.extend_from_slice(b"test");
-            expected.push(b'\n');
-        }
-
-        assert!(result.is_some(), "Should return Some for valid input");
-        assert_eq!(
-            result.unwrap(),
-            expected,
-            "Empty categories with mult=3 should repeat entire body 3 times"
-        );
+    fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
+        let joined = lines.join("\n");
+        Bytes::from(joined)
     }
 
     #[test]
-    fn test_build_envelope_body_mult_with_categories() {
-        // When mult > 1 and categories present, each matching block should be repeated N times
+    fn test_modify_envelope_multiply_unique_event_ids() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+
         let mut body = Vec::new();
+        // Envelope header with event_id
+        body.extend_from_slice(
+            br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"5cb13bb8-eb7f-4a50-a8d8-9d309fd1049d"}"#,
+        );
+        body.push(b'\n');
+        // Event item
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":27}\n");
+        body.extend_from_slice(br#"{"message":"something failed"}"#);
+        body.push(b'\n');
+
+        let result = modify_envelope(&Bytes::from(body), &outbound, &[], 3);
+
+        assert!(result.is_some());
+        let new_body = result.unwrap();
+        let body_str = String::from_utf8(new_body.to_vec()).unwrap();
+
+        // Split by lines and filter for envelope headers (contain event_id but not "type")
+        let envelope_headers: Vec<&str> = body_str
+            .lines()
+            .filter(|line| line.contains("event_id") && !line.contains(r#""type""#))
+            .collect();
+
+        assert_eq!(
+            envelope_headers.len(),
+            3,
+            "Should have 3 envelope headers with event_id"
+        );
+
+        // Parse each header and extract event_id
+        let mut event_ids = Vec::new();
+        for header in &envelope_headers {
+            let json: Value = serde_json::from_str(header).unwrap();
+            let event_id = json.get("event_id").unwrap().as_str().unwrap();
+            event_ids.push(event_id.to_string());
+        }
+
+        // Verify all event_ids are unique
+        assert_eq!(event_ids.len(), 3);
+        assert_ne!(event_ids[0], event_ids[1], "Event IDs should be unique");
+        assert_ne!(event_ids[1], event_ids[2], "Event IDs should be unique");
+        assert_ne!(event_ids[0], event_ids[2], "Event IDs should be unique");
+
+        // Verify none of them are the original event_id
+        assert_ne!(
+            event_ids[0], "5cb13bb8-eb7f-4a50-a8d8-9d309fd1049d",
+            "Should not use original event_id"
+        );
+
+        // Verify all envelopes have the updated DSN
+        for header in &envelope_headers {
+            let json: Value = serde_json::from_str(header).unwrap();
+            let dsn = json.get("dsn").unwrap().as_str().unwrap();
+            assert_eq!(
+                dsn, "https://outbound@o789.ingest.sentry.io/6789",
+                "DSN should be updated"
+            );
+        }
+    }
+
+    #[test]
+    fn test_modify_envelope_multiply_with_categories() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+        let mut body = Vec::new();
+        // Envelope header
+        body.extend_from_slice(
+            br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"original-id"}"#,
+        );
+        body.push(b'\n');
+        // Attachment item (should be filtered out)
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
         body.push(b'\n');
+        // Event item (should be multiplied)
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
         let categories = vec!["event".to_string()];
-        let result = build_envelope_body(&body, &categories, 2);
+        let result = modify_envelope(&Bytes::from(body), &outbound, &categories, 2);
 
-        let mut expected = Vec::new();
-        // Event block should be repeated 2 times
-        for _ in 0..2 {
-            expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
-            expected.extend_from_slice(b"test");
-            expected.push(b'\n');
-        }
+        assert!(result.is_some());
+        let new_body = result.unwrap();
+        let body_str = String::from_utf8(new_body.to_vec()).unwrap();
 
-        assert!(result.is_some(), "Should return Some for valid input");
+        // Count envelope headers (lines containing event_id)
+        let envelope_header_count = body_str.lines().filter(|line| line.contains("event_id")).count();
         assert_eq!(
-            result.unwrap(),
-            expected,
-            "Categories with mult=2 should repeat each matching block 2 times"
+            envelope_header_count, 2,
+            "Should have 2 envelope headers when multiply=2"
         );
-    }
 
-    fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
-        let joined = lines.join("\n");
-        Bytes::from(joined)
+        // Count event items (lines containing "type\":\"event")
+        let event_item_count = body_str
+            .lines()
+            .filter(|line| line.contains(r#""type":"event""#))
+            .count();
+        assert_eq!(
+            event_item_count, 2,
+            "Should have 2 event items when multiply=2 with event category"
+        );
+
+        // Verify attachment is not included (categories filter)
+        assert!(
+            !body_str.contains("attachment"),
+            "Attachment should be filtered out"
+        );
     }
 
     fn make_test_config() -> ConfigData {
