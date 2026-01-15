@@ -60,7 +60,7 @@ pub fn make_outbound_request(
     let outbound_headers = builder.headers_mut().unwrap();
     for (key, value) in headers.iter() {
         if NO_COPY_HEADERS.contains(&key.as_str())
-            || (config.modify_envelope_header && key == "content-encoding")
+            || (config.modify_envelope && key == "content-encoding")
         {
             continue;
         }
@@ -75,9 +75,83 @@ pub fn make_outbound_request(
     builder
 }
 
+fn build_envelope_body(bytes: &[u8], categories: &[String]) -> Option<Vec<u8>> {
+    // If categories is empty, return copy of all bytes
+    if categories.is_empty() {
+        return Some(bytes.to_owned());
+    }
+
+    let mut output = Vec::new();
+    let mut position = 0;
+
+    // Iterate over blocks in envelope
+    while position < bytes.len() {
+        // Find the end of the header line (first \n)
+        let header_end = match bytes[position..].iter().position(|&x| x == b'\n') {
+            Some(pos) => position + pos,
+            None => {
+                warn!("Could not find header line ending");
+                return None;
+            }
+        };
+
+        let header_slice = &bytes[position..header_end];
+        let header_str = match String::from_utf8(header_slice.to_vec()) {
+            Ok(h) => h,
+            Err(e) => {
+                warn!("Could not convert envelope header to String {0}", e);
+                return None;
+            }
+        };
+
+        let header_json: Value = match serde_json::from_str(&header_str) {
+            Ok(v) => v,
+            Err(e) => {
+                warn!("Could not convert envelope header to JSON {0}", e);
+                return None;
+            }
+        };
+
+        let event_type = header_json
+            .get("type")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+
+        let length = match header_json.get("length").and_then(|v| v.as_u64()) {
+            Some(len) => len as usize,
+            None => {
+                warn!("Missing length field in header for block type {event_type}");
+                return None;
+            }
+        };
+
+        // Move past the header and its \n
+        let data_start = header_end + 1;
+        let data_end = data_start + length;
+
+        if data_end > bytes.len() {
+            warn!("Data length {length} exceeds remaining bytes for block type {event_type}");
+            return None;
+        }
+
+        let data_chunk = &bytes[data_start..data_end];
+
+        if categories.contains(&event_type.to_string()) {
+            output.extend_from_slice(header_slice);
+            output.push(b'\n');
+            output.extend_from_slice(data_chunk);
+            output.push(b'\n');
+        }
+
+        // Move to next block (skip past data and the trailing \n)
+        position = data_end + 1;
+    }
+    Some(output)
+}
+
 /// Replace the DSN key if it is found in the first line of the body
 /// as per the envelope specs https://develop.sentry.dev/sdk/envelopes/
-pub fn replace_envelope_dsn(body: &Bytes, outbound: &dsn::Dsn) -> Option<Bytes> {
+pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, categories: &[String]) -> Option<Bytes> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
     let envelope_header = match body_chunks.next() {
@@ -115,7 +189,7 @@ pub fn replace_envelope_dsn(body: &Bytes, outbound: &dsn::Dsn) -> Option<Bytes> 
 
     let header_line = Bytes::from(json_header.to_string());
     let envelope_body = match body_chunks.next() {
-        Some(c) => c.to_owned(),
+        Some(c) => build_envelope_body(c, categories)?,
         None => return None,
     };
     let new_body =
@@ -162,7 +236,7 @@ where
 
     // Bodies can be compressed. If relay is configured to be more permissive
     // we don't have to decompress and rewrite the body.
-    if config.modify_envelope_header && headers.contains_key("content-encoding") {
+    if config.modify_envelope && headers.contains_key("content-encoding") {
         let request_encoding = headers.get("content-encoding").unwrap();
         let decode_body_time = Instant::now();
         body_bytes = match decode_body(request_encoding, &body_bytes) {
@@ -466,7 +540,7 @@ mod tests {
         );
 
         let config = ConfigData {
-            modify_envelope_header: false,
+            modify_envelope: false,
             ..ConfigData::default()
         };
         let builder = make_outbound_request(&config, &uri, &headers, &outbound);
@@ -481,36 +555,36 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_envelope_dsn_empty_body() {
+    fn test_modify_envelope_empty_body() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
         let body = Bytes::from("");
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_replace_envelope_dsn_missing_key() {
+    fn test_modify_envelope_missing_key() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
         let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#];
         let body = string_list_to_bytes(lines);
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_none());
     }
 
     #[test]
-    fn test_replace_envelope_dsn_only_first_line() {
+    fn test_modify_envelope_only_first_line() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
         let lines = vec![r#"{"dsn":"value"}"#, r#"{"second":"line", "dsn":"value"}"#];
         let body = string_list_to_bytes(lines);
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
@@ -523,7 +597,7 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_envelope_dsn_present() {
+    fn test_modify_envelope_present() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -532,7 +606,7 @@ mod tests {
             r#"{"message":"something failed"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_some());
 
@@ -548,7 +622,7 @@ mod tests {
     }
 
     #[test]
-    fn test_replace_envelope_dsn_trace_public_key() {
+    fn test_modify_envelope_trace_public_key() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -557,7 +631,7 @@ mod tests {
             r#"{"second":"line", "dsn":"value"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = replace_envelope_dsn(&body, &outbound);
+        let result = modify_envelope(&body, &outbound, &[]);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
@@ -678,7 +752,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_and_decode_body() {
         let config = make_test_config();
-        assert!(config.modify_envelope_header, "Should default to true");
+        assert!(config.modify_envelope, "Should default to true");
 
         let contents = b"some content to be compressed";
         let mut encoder = DeflateEncoder::new(&contents[..], Compression::fast());
@@ -703,7 +777,7 @@ mod tests {
     #[tokio::test]
     async fn test_read_and_decode_body_decode_disabled() {
         let mut config = make_test_config();
-        config.modify_envelope_header = false;
+        config.modify_envelope = false;
 
         let contents = b"some content to be compressed";
         let mut encoder = DeflateEncoder::new(&contents[..], Compression::fast());
@@ -725,6 +799,119 @@ mod tests {
         let new_bytes = result.unwrap();
         assert_eq!(new_bytes.to_vec(), expected_bytes.to_vec());
         assert_ne!(new_bytes.to_vec(), b"some content to be compressed");
+    }
+
+    #[test]
+    fn test_build_envelope_body_empty_filter() {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
+        body.extend_from_slice(b"hello");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+        body.push(b'\n');
+
+        let categories: Vec<String> = vec![];
+        let result = build_envelope_body(&body, &categories);
+
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            body,
+            "Empty categories should return all bytes unchanged"
+        );
+    }
+
+    #[test]
+    fn test_build_envelope_body_with_filter() {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
+        body.extend_from_slice(b"hello");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+        body.push(b'\n');
+
+        let categories = vec!["event".to_string()];
+        let result = build_envelope_body(&body, &categories);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        expected.extend_from_slice(b"test");
+        expected.push(b'\n');
+
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Should include filtered block types"
+        );
+    }
+
+    #[test]
+    fn test_build_envelope_body_multiline_data() {
+        let mut body = Vec::new();
+
+        let attachment_data = "hello\nhello";
+        let attachment_header = format!(
+            "{{\"type\":\"attachment\",\"length\":{}}}\n",
+            attachment_data.len()
+        );
+
+        body.extend_from_slice(attachment_header.as_bytes());
+        body.extend_from_slice(attachment_data.as_bytes());
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+        body.push(b'\n');
+
+        let categories = vec!["attachment".to_string()];
+        let result = build_envelope_body(&body, &categories);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(attachment_header.as_bytes());
+        expected.extend_from_slice(attachment_data.as_bytes());
+        expected.push(b'\n');
+
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Should correctly handle multiline data by using the length field from header"
+        );
+    }
+
+    #[test]
+    fn test_build_envelope_body_binary_data() {
+        let mut body = Vec::new();
+
+        let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
+        let binary_header = format!(
+            "{{\"type\":\"attachment\",\"length\":{}}}\n",
+            binary_data.len()
+        );
+
+        body.extend_from_slice(binary_header.as_bytes());
+        body.extend_from_slice(&binary_data);
+        body.push(b'\n');
+
+        let categories = vec!["attachment".to_string()];
+        let result = build_envelope_body(&body, &categories);
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(binary_header.as_bytes());
+        expected.extend_from_slice(&binary_data);
+        expected.push(b'\n');
+
+        assert!(
+            result.is_some(),
+            "Should return Some even with non-UTF8 data containing newline in payload"
+        );
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Should correctly handle binary data with embedded newline by using length field from header"
+        );
     }
 
     fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {

@@ -24,7 +24,7 @@ pub struct AppState {
 impl AppState {
     pub fn from_config(config: ConfigData) -> Self {
         // Create a map of inbound -> outbound keys for simpler lookups.
-        let keymap = dsn::make_key_map(config.keys.clone());
+        let keymap = dsn::make_key_map(&config);
 
         // Create a client connection pool that is re-used.
         let https = HttpsConnector::new();

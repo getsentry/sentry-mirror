@@ -7,7 +7,7 @@ use hyper::{HeaderMap, Uri};
 use regex::Regex;
 use url::Url;
 
-use crate::config;
+use crate::config::{ConfigData, OutboundConfig};
 
 /// DSN components parsed from a DSN string
 #[derive(Debug, Clone, PartialEq)]
@@ -98,18 +98,25 @@ impl FromStr for Dsn {
     }
 }
 
+#[derive(Debug, PartialEq, Clone)]
+pub struct OutboundEntry {
+    pub dsn: Dsn,
+    pub categories: Vec<String>,
+}
+
 #[derive(Debug, PartialEq)]
 pub struct DsnKeyRing {
     pub inbound: Dsn,
-    pub outbound: Vec<Dsn>,
+    pub outbound: Vec<OutboundEntry>,
 }
 
 /// Convert a list of Config data keys into Dsn's that we can use
 /// when handling requests.
-pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
+pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
     let mut keymap: HashMap<String, DsnKeyRing> = HashMap::new();
-    for item in keys {
-        let inbound_dsn = match item.inbound.expect("Missing inbound key").parse::<Dsn>() {
+
+    for item in &config.keys {
+        let inbound_dsn = match item.inbound.parse::<Dsn>() {
             Ok(r) => r,
             Err(e) => panic!("{:?}", e),
         };
@@ -117,11 +124,17 @@ pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
             .outbound
             .iter()
             .filter_map(|item| match item {
-                Some(i) => Some(i),
-                None => None,
+                OutboundConfig::Dsn(opt) => opt.as_ref().map(|dsn_str| (dsn_str.clone(), vec![])),
+                OutboundConfig::Detailed { dsn, categories } => {
+                    let categories = categories.clone().unwrap_or(vec![]);
+                    Some((dsn.clone(), categories))
+                }
             })
-            .map(|outbound_str| outbound_str.parse::<Dsn>().expect("Invalid outbound DSN"))
-            .collect::<Vec<Dsn>>();
+            .map(|(outbound_str, categories)| {
+                let dsn = outbound_str.parse::<Dsn>().expect("Invalid outbound DSN");
+                OutboundEntry { dsn, categories }
+            })
+            .collect::<Vec<OutboundEntry>>();
         keymap.insert(
             inbound_dsn.key_id(),
             DsnKeyRing {
@@ -130,6 +143,7 @@ pub fn make_key_map(keys: Vec<config::KeyRing>) -> HashMap<String, DsnKeyRing> {
             },
         );
     }
+
     keymap
 }
 
@@ -139,7 +153,7 @@ pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
         out.push_str(format!("Inbound: {}\n", keyring.inbound).as_ref());
         out.push_str("Outbound:\n");
         for outbound in keyring.outbound.iter() {
-            out.push_str(format!("- {}\n", outbound).as_ref());
+            out.push_str(format!("- {}\n", outbound.dsn).as_ref());
         }
     }
     out
@@ -180,7 +194,25 @@ pub fn from_request(uri: &Uri, headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::KeyRing;
+    use crate::config::{ConfigData, ConfigKeyPair, OutboundConfig};
+    use crate::logging::LogFormat;
+
+    fn make_test_config() -> ConfigData {
+        ConfigData {
+            sentry_dsn: None,
+            sentry_env: None,
+            traces_sample_rate: None,
+            log_filter: "debug".into(),
+            log_format: LogFormat::Text,
+            statsd_addr: None,
+            default_metrics_tags: None,
+            ip: "127.0.0.1".into(),
+            port: 3000,
+            verbose: true,
+            keys: vec![],
+            modify_envelope: true,
+        }
+    }
 
     #[test]
     fn parse_from_string_valid() {
@@ -214,21 +246,86 @@ mod tests {
     }
 
     #[test]
-    fn make_key_map_valid() {
-        let keys = vec![KeyRing {
-            inbound: Some("https://abcdef@sentry.io/1234".to_string()),
+    fn make_key_map_with_key_rings_only() {
+        let mut config = make_test_config();
+        config.keys = vec![ConfigKeyPair {
+            inbound: "https://abcdef@sentry.io/1234".to_string(),
             outbound: vec![
-                Some("https://ghijkl@sentry.io/567".to_string()),
-                Some("https://mnopq@sentry.io/890".to_string()),
+                OutboundConfig::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
+                OutboundConfig::Dsn(Some("https://mnopq@sentry.io/890".to_string())),
             ],
         }];
-        let keymap = make_key_map(keys);
+        let keymap = make_key_map(&config);
         assert_eq!(keymap.len(), 1);
         let value = keymap.get("abcdef").expect("Should have a value");
         assert_eq!(value.inbound.public_key, "abcdef");
         assert_eq!(value.outbound.len(), 2);
-        assert_eq!(value.outbound[0].public_key, "ghijkl");
-        assert_eq!(value.outbound[1].public_key, "mnopq");
+        assert_eq!(value.outbound[0].dsn.public_key, "ghijkl");
+        assert_eq!(
+            value.outbound[0].categories.len(),
+            0,
+            "ConfigKeyPair should have no categories"
+        );
+        assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
+        assert_eq!(
+            value.outbound[1].categories.len(),
+            0,
+            "ConfigKeyPair should have no categories"
+        );
+    }
+
+    #[test]
+    fn make_key_map_with_rules_only() {
+        let mut config = make_test_config();
+        config.keys = vec![ConfigKeyPair {
+            inbound: "https://abcdef@sentry.io/1234".to_string(),
+            outbound: vec![
+                OutboundConfig::Detailed {
+                    dsn: "https://ghijkl@sentry.io/567".to_string(),
+                    categories: Some(vec!["event".to_string(), "transaction".to_string()]),
+                },
+                OutboundConfig::Detailed {
+                    dsn: "https://mnopq@sentry.io/890".to_string(),
+                    categories: Some(vec!["replay".to_string()]),
+                },
+            ],
+        }];
+        let keymap = make_key_map(&config);
+        assert_eq!(keymap.len(), 1);
+        let value = keymap.get("abcdef").expect("Should have a value");
+        assert_eq!(value.inbound.public_key, "abcdef");
+        assert_eq!(value.outbound.len(), 2);
+        assert_eq!(value.outbound[0].dsn.public_key, "ghijkl");
+        assert_eq!(value.outbound[0].categories, vec!["event", "transaction"]);
+        assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
+        assert_eq!(value.outbound[1].categories, vec!["replay"]);
+    }
+
+    #[test]
+    fn make_key_map_with_mixed_outbound() {
+        let mut config = make_test_config();
+        config.keys = vec![ConfigKeyPair {
+            inbound: "https://key111@sentry.io/1111".to_string(),
+            outbound: vec![
+                OutboundConfig::Dsn(Some("https://key222@sentry.io/2222".to_string())),
+                OutboundConfig::Detailed {
+                    dsn: "https://key333@sentry.io/3333".to_string(),
+                    categories: Some(vec!["error".to_string(), "span".to_string()]),
+                },
+            ],
+        }];
+        let keymap = make_key_map(&config);
+
+        // Check Dsn entry
+        let key_value = keymap
+            .get("key111")
+            .expect("Should have ConfigKeyPair entry");
+        assert_eq!(key_value.inbound.public_key, "key111");
+        assert_eq!(key_value.outbound.len(), 2);
+        assert_eq!(key_value.outbound[0].dsn.public_key, "key222");
+        assert_eq!(key_value.outbound[0].categories.len(), 0);
+        assert_eq!(key_value.outbound[1].dsn.public_key, "key333");
+        assert_eq!(key_value.outbound[1].categories, vec!["error", "span"]);
     }
 
     #[test]
@@ -317,14 +414,15 @@ mod tests {
 
     #[test]
     fn test_format_key_map() {
-        let keys = vec![KeyRing {
-            inbound: Some("https://abcdef@sentry.io/1234".to_string()),
+        let mut config = make_test_config();
+        config.keys = vec![ConfigKeyPair {
+            inbound: "https://abcdef@sentry.io/1234".to_string(),
             outbound: vec![
-                Some("https://ghijkl@sentry.io/567".to_string()),
-                Some("https://mnopq@sentry.io/890".to_string()),
+                OutboundConfig::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
+                OutboundConfig::Dsn(Some("https://mnopq@sentry.io/890".to_string())),
             ],
         }];
-        let key_map = make_key_map(keys);
+        let key_map = make_key_map(&config);
         let output = format_key_map(&key_map);
         dbg!(&output);
         assert!(output.contains("Inbound: https://abcdef@sentry.io/1234"));

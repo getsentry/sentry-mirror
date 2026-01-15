@@ -11,7 +11,7 @@ sampled differently.
 
 ## Configuration
 
-sentry-mirror is primary configured through a YAML file:
+sentry-mirror is primary configured through a YAML file. A simple example is:
 
 ```yaml
 ip: 0.0.0.0
@@ -22,6 +22,22 @@ keys:
       - https://public-key-red@o123.ingest.de.sentry.io/123456
       - https://public-key-blue@o456.ingest.us.sentry.io/654321
 ```
+
+You can also enable selective forwarding to an outbound DSN based on envelope item categories:
+
+```yaml
+ip: 0.0.0.0
+port: 3000
+keys:
+  - inbound: http://public-key@sentry-mirror.acme.org/1847101
+    outbound:
+      - https://public-key-red@o123.ingest.de.sentry.io/123456
+      - dsn: https://public-key-blue@o456.ingest.us.sentry.io/654321
+        categories: [error, transaction, profile]
+```
+
+When categories is a non-empty list only those categories will be forwarded. If
+the category list is empty or undefined *all categories* will be forwarded.
 
 ## Request rewriting
 
