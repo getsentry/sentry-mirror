@@ -75,12 +75,12 @@ pub fn make_outbound_request(
     builder
 }
 
-fn build_envelope_body(bytes: &[u8], categories: &[String], mult: usize) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(bytes.len() * mult);
+fn build_envelope_body(bytes: &[u8], categories: &[String], multiply: usize) -> Option<Vec<u8>> {
+    let mut output = Vec::with_capacity(bytes.len() * multiply);
 
-    // If categories is empty, return copy of all bytes repeated mult times
+    // If categories is empty, return copy of all bytes repeated multiply times
     if categories.is_empty() {
-        for _ in 0..mult {
+        for _ in 0..multiply {
             output.extend_from_slice(bytes);
         }
         return Some(output);
@@ -141,7 +141,7 @@ fn build_envelope_body(bytes: &[u8], categories: &[String], mult: usize) -> Opti
         let data_chunk = &bytes[data_start..data_end];
 
         if categories.contains(&event_type.to_string()) {
-            for _ in 0..mult {
+            for _ in 0..multiply {
                 output.extend_from_slice(header_slice);
                 output.push(b'\n');
                 output.extend_from_slice(data_chunk);
@@ -161,7 +161,7 @@ pub fn modify_envelope(
     body: &Bytes,
     outbound: &dsn::Dsn,
     categories: &[String],
-    mult: usize,
+    multiply: usize,
 ) -> Option<Bytes> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
@@ -200,7 +200,7 @@ pub fn modify_envelope(
 
     let header_line = Bytes::from(json_header.to_string());
     let envelope_body = match body_chunks.next() {
-        Some(c) => build_envelope_body(c, categories, mult)?,
+        Some(c) => build_envelope_body(c, categories, multiply)?,
         None => return None,
     };
     let new_body =

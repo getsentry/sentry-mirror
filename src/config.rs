@@ -24,12 +24,12 @@ pub enum OutboundConfig {
     Detailed {
         dsn: String,
         categories: Option<Vec<String>>,
-        #[serde(default = "default_mult")]
-        mult: usize,
+        #[serde(default = "default_multiply")]
+        multiply: usize,
     },
 }
 
-fn default_mult() -> usize {
+fn default_multiply() -> usize {
     1
 }
 
@@ -153,15 +153,15 @@ mod tests {
 
     #[test]
     fn test_outbound_config_mult_optional() {
-        // Test that mult is optional and defaults to 1 when not specified
+        // Test that multiply is optional and defaults to 1 when not specified
         let json = r#"{"dsn": "https://key@sentry.io/123", "categories": ["event"]}"#;
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories, mult } => {
+            OutboundConfig::Detailed { dsn, categories, multiply } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(categories, Some(vec!["event".to_string()]));
-                assert_eq!(mult, 1, "mult should default to 1 when not specified");
+                assert_eq!(multiply, 1, "multiply should default to 1 when not specified");
             }
             _ => panic!("Expected Detailed variant"),
         }
@@ -169,14 +169,14 @@ mod tests {
 
     #[test]
     fn test_outbound_config_mult_specified() {
-        // Test that mult can be explicitly set
-        let json = r#"{"dsn": "https://key@sentry.io/123", "categories": [], "mult": 5}"#;
+        // Test that multiply can be explicitly set
+        let json = r#"{"dsn": "https://key@sentry.io/123", "categories": [], "multiply": 5}"#;
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories: _, mult } => {
+            OutboundConfig::Detailed { dsn, categories: _, multiply } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
-                assert_eq!(mult, 5, "mult should be 5 when explicitly specified");
+                assert_eq!(multiply, 5, "multiply should be 5 when explicitly specified");
             }
             _ => panic!("Expected Detailed variant"),
         }
@@ -184,15 +184,15 @@ mod tests {
 
     #[test]
     fn test_outbound_config_only_dsn() {
-        // Test that only dsn is required, categories and mult are optional
+        // Test that only dsn is required, categories and multiply are optional
         let json = r#"{"dsn": "https://key@sentry.io/123"}"#;
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories, mult } => {
+            OutboundConfig::Detailed { dsn, categories, multiply } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(categories, None, "categories should be None when not specified");
-                assert_eq!(mult, 1, "mult should default to 1");
+                assert_eq!(multiply, 1, "multiply should default to 1");
             }
             _ => panic!("Expected Detailed variant"),
         }

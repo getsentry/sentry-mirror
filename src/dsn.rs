@@ -102,7 +102,7 @@ impl FromStr for Dsn {
 pub struct OutboundEntry {
     pub dsn: Dsn,
     pub categories: Vec<String>,
-    pub mult: usize,
+    pub multiply: usize,
 }
 
 #[derive(Debug, PartialEq)]
@@ -126,14 +126,14 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
             .iter()
             .filter_map(|item| match item {
                 OutboundConfig::Dsn(opt) => opt.as_ref().map(|dsn_str| (dsn_str.clone(), vec![], 1)),
-                OutboundConfig::Detailed { dsn, categories, mult } => {
+                OutboundConfig::Detailed { dsn, categories, multiply } => {
                     let categories = categories.clone().unwrap_or(vec![]);
-                    Some((dsn.clone(), categories, *mult))
+                    Some((dsn.clone(), categories, *multiply))
                 }
             })
-            .map(|(outbound_str, categories, mult)| {
+            .map(|(outbound_str, categories, multiply)| {
                 let dsn = outbound_str.parse::<Dsn>().expect("Invalid outbound DSN");
-                OutboundEntry { dsn, categories, mult }
+                OutboundEntry { dsn, categories, multiply }
             })
             .collect::<Vec<OutboundEntry>>();
         keymap.insert(
@@ -284,12 +284,12 @@ mod tests {
                 OutboundConfig::Detailed {
                     dsn: "https://ghijkl@sentry.io/567".to_string(),
                     categories: Some(vec!["event".to_string(), "transaction".to_string()]),
-                    mult: 1,
+                    multiply: 1,
                 },
                 OutboundConfig::Detailed {
                     dsn: "https://mnopq@sentry.io/890".to_string(),
                     categories: Some(vec!["replay".to_string()]),
-                    mult: 1,
+                    multiply: 1,
                 },
             ],
         }];
@@ -314,7 +314,7 @@ mod tests {
                 OutboundConfig::Detailed {
                     dsn: "https://key333@sentry.io/3333".to_string(),
                     categories: Some(vec!["error".to_string(), "span".to_string()]),
-                    mult: 1,
+                    multiply: 1,
                 },
             ],
         }];
