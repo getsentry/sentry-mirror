@@ -241,7 +241,7 @@ mod tests {
 
     use super::{full, handle_request};
     use crate::{
-        config::{ConfigData, KeyRing, OutboundConfig},
+        config::{ConfigData, ConfigKeyPair, OutboundConfig},
         logging::LogFormat,
         state::AppState,
     };
@@ -261,7 +261,7 @@ mod tests {
             port: 3000,
             verbose: true,
             keys: vec![
-                KeyRing {
+                ConfigKeyPair {
                     inbound: Some(
                         "https://eeeeee12345678901234567890123456@localhost:3000/1234".to_string(),
                     ),
@@ -270,7 +270,7 @@ mod tests {
                         OutboundConfig::Dsn(Some("https://bbbbbbbb234567890123456789012345@other.example.com/9012".to_string())),
                     ],
                 },
-                KeyRing {
+                ConfigKeyPair {
                     inbound: Some(
                         "https://ddddddd1234567890123456789012345@localhost:3000/3456".to_string(),
                     ),

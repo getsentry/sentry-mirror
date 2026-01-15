@@ -200,7 +200,7 @@ pub fn from_request(uri: &Uri, headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ConfigData, KeyRing, OutboundConfig};
+    use crate::config::{ConfigData, ConfigKeyPair, OutboundConfig};
     use crate::logging::LogFormat;
 
     fn make_test_config() -> ConfigData {
@@ -254,7 +254,7 @@ mod tests {
     #[test]
     fn make_key_map_with_key_rings_only() {
         let mut config = make_test_config();
-        config.keys = vec![KeyRing {
+        config.keys = vec![ConfigKeyPair {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
                 OutboundConfig::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),
@@ -270,20 +270,20 @@ mod tests {
         assert_eq!(
             value.outbound[0].categories.len(),
             0,
-            "KeyRing should have no categories"
+            "ConfigKeyPair should have no categories"
         );
         assert_eq!(value.outbound[1].dsn.public_key, "mnopq");
         assert_eq!(
             value.outbound[1].categories.len(),
             0,
-            "KeyRing should have no categories"
+            "ConfigKeyPair should have no categories"
         );
     }
 
     #[test]
     fn make_key_map_with_rules_only() {
         let mut config = make_test_config();
-        config.keys = vec![KeyRing {
+        config.keys = vec![ConfigKeyPair {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
                 OutboundConfig::Detailed {
@@ -310,7 +310,7 @@ mod tests {
     #[test]
     fn make_key_map_with_mixed_outbound() {
         let mut config = make_test_config();
-        config.keys = vec![KeyRing {
+        config.keys = vec![ConfigKeyPair {
             inbound: Some("https://key111@sentry.io/1111".to_string()),
             outbound: vec![
                 OutboundConfig::Dsn(Some("https://key222@sentry.io/2222".to_string())),
@@ -323,7 +323,7 @@ mod tests {
         let keymap = make_key_map(&config);
 
         // Check Dsn entry
-        let key_value = keymap.get("key111").expect("Should have KeyRing entry");
+        let key_value = keymap.get("key111").expect("Should have ConfigKeyPair entry");
         assert_eq!(key_value.inbound.public_key, "key111");
         assert_eq!(key_value.outbound.len(), 2);
         assert_eq!(key_value.outbound[0].dsn.public_key, "key222");
@@ -419,7 +419,7 @@ mod tests {
     #[test]
     fn test_format_key_map() {
         let mut config = make_test_config();
-        config.keys = vec![KeyRing {
+        config.keys = vec![ConfigKeyPair {
             inbound: Some("https://abcdef@sentry.io/1234".to_string()),
             outbound: vec![
                 OutboundConfig::Dsn(Some("https://ghijkl@sentry.io/567".to_string())),

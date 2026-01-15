@@ -29,7 +29,7 @@ pub enum OutboundConfig {
 /// A set of inbound and outbound keys.
 /// Requests sent to an inbound DSN are mirrored to all outbound DSNs
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct KeyRing {
+pub struct ConfigKeyPair {
     /// Inbound keys are virtual DSNs that the mirror will accept traffic on
     pub inbound: Option<String>,
 
@@ -72,7 +72,7 @@ pub struct ConfigData {
     pub verbose: bool,
 
     /// A list of keypairs that the server will handle.
-    pub keys: Vec<KeyRing>,
+    pub keys: Vec<ConfigKeyPair>,
 
     /// Set to false to skip rewriting envelope headers.
     /// Disaling envelope header modification makes mirroring more efficient,
