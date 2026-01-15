@@ -132,7 +132,7 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
             })
             .map(|(outbound_str, categories)| {
                 let dsn = outbound_str.parse::<Dsn>().expect("Invalid outbound DSN");
-                OutboundEntry {dsn, categories}
+                OutboundEntry { dsn, categories }
             })
             .collect::<Vec<OutboundEntry>>();
         keymap.insert(
@@ -311,13 +311,15 @@ mod tests {
                 OutboundConfig::Detailed {
                     dsn: "https://key333@sentry.io/3333".to_string(),
                     categories: Some(vec!["error".to_string(), "span".to_string()]),
-                }
+                },
             ],
         }];
         let keymap = make_key_map(&config);
 
         // Check Dsn entry
-        let key_value = keymap.get("key111").expect("Should have ConfigKeyPair entry");
+        let key_value = keymap
+            .get("key111")
+            .expect("Should have ConfigKeyPair entry");
         assert_eq!(key_value.inbound.public_key, "key111");
         assert_eq!(key_value.outbound.len(), 2);
         assert_eq!(key_value.outbound[0].dsn.public_key, "key222");

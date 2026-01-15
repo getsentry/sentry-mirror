@@ -23,8 +23,8 @@ pub enum OutboundConfig {
     // DSNs can also have additional settings defined for them using a dictionary
     Detailed {
         dsn: String,
-        categories: Option<Vec<String>>
-    }
+        categories: Option<Vec<String>>,
+    },
 }
 
 /// A set of inbound and outbound keys.
