@@ -20,6 +20,7 @@ use crate::logging::LogFormat;
 pub enum OutboundConfig {
     /// Shorthand: just a DSN string
     Dsn(Option<String>),
+    // DSNs can also have additional settings defined for them using a dictionary
     Detailed {
         dsn: String,
         categories: Option<Vec<String>>
