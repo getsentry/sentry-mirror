@@ -115,7 +115,6 @@ pub struct DsnKeyRing {
 pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
     let mut keymap: HashMap<String, DsnKeyRing> = HashMap::new();
 
-    // NOTE: This loop exists for backward compatibility with older config files.
     for item in &config.keys {
         let inbound_dsn = match item.inbound.parse::<Dsn>() {
             Ok(r) => r,

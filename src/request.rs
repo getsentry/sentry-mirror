@@ -75,9 +75,9 @@ pub fn make_outbound_request(
     builder
 }
 
-fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Option<Vec<u8>> {
-    // If filter is empty, return copy of all bytes
-    if filter.is_empty() {
+fn build_envelope_body(bytes: &[u8], categories: &[String]) -> Option<Vec<u8>> {
+    // If categories is empty, return copy of all bytes
+    if categories.is_empty() {
         return Some(bytes.to_owned());
     }
 
@@ -136,7 +136,7 @@ fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Option<Vec<u8>> {
 
         let data_chunk = &bytes[data_start..data_end];
 
-        if filter.contains(&event_type.to_string()) {
+        if categories.contains(&event_type.to_string()) {
             output.extend_from_slice(header_slice);
             output.push(b'\n');
             output.extend_from_slice(data_chunk);
@@ -151,7 +151,7 @@ fn build_envelope_body(bytes: &[u8], filter: &[String]) -> Option<Vec<u8>> {
 
 /// Replace the DSN key if it is found in the first line of the body
 /// as per the envelope specs https://develop.sentry.dev/sdk/envelopes/
-pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, filter: &[String]) -> Option<Bytes> {
+pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, categories: &[String]) -> Option<Bytes> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
     let envelope_header = match body_chunks.next() {
@@ -189,7 +189,7 @@ pub fn modify_envelope(body: &Bytes, outbound: &dsn::Dsn, filter: &[String]) -> 
 
     let header_line = Bytes::from(json_header.to_string());
     let envelope_body = match body_chunks.next() {
-        Some(c) => build_envelope_body(c, filter)?,
+        Some(c) => build_envelope_body(c, categories)?,
         None => return None,
     };
     let new_body =
@@ -811,14 +811,14 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let filter: Vec<String> = vec![];
-        let result = build_envelope_body(&body, &filter);
+        let categories: Vec<String> = vec![];
+        let result = build_envelope_body(&body, &categories);
 
         assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
             result.unwrap(),
             body,
-            "Empty filter should return all bytes unchanged"
+            "Empty categories should return all bytes unchanged"
         );
     }
 
@@ -832,8 +832,8 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let filter = vec!["event".to_string()];
-        let result = build_envelope_body(&body, &filter);
+        let categories = vec!["event".to_string()];
+        let result = build_envelope_body(&body, &categories);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
@@ -865,8 +865,8 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let filter = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &filter);
+        let categories = vec!["attachment".to_string()];
+        let result = build_envelope_body(&body, &categories);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(attachment_header.as_bytes());
@@ -895,8 +895,8 @@ mod tests {
         body.extend_from_slice(&binary_data);
         body.push(b'\n');
 
-        let filter = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &filter);
+        let categories = vec!["attachment".to_string()];
+        let result = build_envelope_body(&body, &categories);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(binary_header.as_bytes());
