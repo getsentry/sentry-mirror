@@ -166,7 +166,7 @@ fn build_envelope_body(bytes: &[u8], categories: &[String], new_event_id: Option
             output.push(b'\n');
         }
     }
-    Some(output)
+    Some(output.trim_ascii().to_vec())
 }
 
 /// Mutate the envelope body based on the outbound key configuration:
@@ -671,10 +671,11 @@ mod tests {
             .unwrap();
         let lines = vec![
             r#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"5cb13bb8-eb7f-4a50-a8d8-9d309fd1049d"}"#,
+            r#"{"type":"event", "length":30}"#,
             r#"{"message":"something failed"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], true);
+        let result = modify_envelope(&body, &outbound, &[], false);
 
         assert!(result.is_some());
 
@@ -683,6 +684,7 @@ mod tests {
 
         let expected_lines = vec![
             r#"{"dsn":"https://outbound@o789.ingest.sentry.io/6789","event_id":"5cb13bb8-eb7f-4a50-a8d8-9d309fd1049d"}"#,
+            r#"{"type":"event", "length":30}"#,
             r#"{"message":"something failed"}"#,
         ];
         let expected = string_list_to_bytes(expected_lines);
@@ -900,7 +902,6 @@ mod tests {
         body.push(b'\n');
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
         body.extend_from_slice(b"test");
-        body.push(b'\n');
 
         let categories = vec!["event".to_string()];
         let result = build_envelope_body(&body, &categories, None);
@@ -908,8 +909,9 @@ mod tests {
         let mut expected = Vec::new();
         expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
         expected.extend_from_slice(b"test");
-        expected.push(b'\n');
 
+        dbg!(String::from_utf8(result.clone().unwrap()).unwrap());
+        dbg!(String::from_utf8(expected.clone()).unwrap());
         assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
             result.unwrap(),
@@ -962,7 +964,6 @@ mod tests {
         let mut expected = Vec::new();
         expected.extend_from_slice(attachment_header.as_bytes());
         expected.extend_from_slice(attachment_data.as_bytes());
-        expected.push(b'\n');
 
         assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
@@ -992,7 +993,6 @@ mod tests {
         let mut expected = Vec::new();
         expected.extend_from_slice(binary_header.as_bytes());
         expected.extend_from_slice(&binary_data);
-        expected.push(b'\n');
 
         assert!(
             result.is_some(),
