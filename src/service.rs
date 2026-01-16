@@ -1,7 +1,6 @@
 use futures::future::join_all;
 use hyper_util::client::legacy::connect::HttpConnector;
 use hyper_util::client::legacy::{Client, ResponseFuture};
-use zstd::zstd_safe::WriteBuf;
 use std::sync::Arc;
 use std::time::Instant;
 use tracing::{debug, warn};
@@ -157,7 +156,7 @@ where
             } else {
                 body_bytes.clone()
             };
-            debug!("Outbound request body for {0}@{1} : {2}", &outbound_host, i, String::from_utf8(body_out.as_slice().to_vec()).unwrap());
+            // debug!("Outbound request body for {0}@{1} : {2}", &outbound_host, i, String::from_utf8(body_out.as_slice().to_vec()).unwrap());
 
             let request = request_builder.body(Full::new(body_out));
             metrics::histogram!(
