@@ -139,15 +139,15 @@ fn build_envelope_body(
         let data_chunk = if let Some(event_id) = new_event_id.clone() {
             let data_chunk = &bytes[data_start..data_end];
 
-            let new_chunk = if let Ok(mut payload) = serde_json::from_slice::<Value>(data_chunk) {
+            
+            if let Ok(mut payload) = serde_json::from_slice::<Value>(data_chunk) {
                 // event_id in the body can't have - in it.
                 payload["event_id"] = Value::String(event_id.replace("-", "").clone());
-                let serialized = serde_json::to_vec(&payload).unwrap();
-                serialized
+                
+                serde_json::to_vec(&payload).unwrap()
             } else {
                 data_chunk.to_vec()
-            };
-            new_chunk
+            }
         } else {
             Vec::from(&bytes[data_start..data_end])
         };
@@ -222,10 +222,7 @@ pub fn modify_envelope(
         return None;
     }
 
-    let envelope_body_bytes = match body_chunks.next() {
-        Some(c) => c,
-        None => return None,
-    };
+    let envelope_body_bytes = body_chunks.next()?;
 
     if replace_item_id {
         let mut output = Vec::with_capacity(body.len());
@@ -238,10 +235,7 @@ pub fn modify_envelope(
         }
 
         let envelope_body =
-            match build_envelope_body(envelope_body_bytes, categories, Some(new_event_id)) {
-                Some(body) => body,
-                None => return None,
-            };
+            build_envelope_body(envelope_body_bytes, categories, Some(new_event_id))?;
 
         output.extend_from_slice(header_copy.to_string().as_bytes());
         output.push(b'\n');
@@ -251,10 +245,7 @@ pub fn modify_envelope(
         Some(Bytes::from(output))
     } else {
         let header_line = Bytes::from(json_header.to_string());
-        let envelope_body = match build_envelope_body(envelope_body_bytes, categories, None) {
-            Some(body) => body,
-            None => return None,
-        };
+        let envelope_body = build_envelope_body(envelope_body_bytes, categories, None)?;
         let new_body =
             Bytes::from([header_line, Bytes::from("\n"), Bytes::from(envelope_body)].concat());
 
