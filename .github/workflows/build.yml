@@ -118,3 +118,5 @@ jobs:
               --amend $REGISTRY:${{ github.sha }}-arm64
             docker manifest push $REGISTRY:$TAG
           done
+
+          echo '### Published SHA \n\n${{ github.sha }}' >> $GITHUB_STEP_SUMMARY
