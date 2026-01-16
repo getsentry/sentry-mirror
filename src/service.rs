@@ -143,7 +143,6 @@ where
                 request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
 
             let body_out = if state.config.modify_envelope {
-                warn!("modifying envelope");
                 match request::modify_envelope(
                     &body_bytes,
                     &outbound.dsn,
@@ -156,7 +155,6 @@ where
             } else {
                 body_bytes.clone()
             };
-            // debug!("Outbound request body for {0}@{1} : {2}", &outbound_host, i, String::from_utf8(body_out.as_slice().to_vec()).unwrap());
 
             let request = request_builder.body(Full::new(body_out));
             metrics::histogram!(

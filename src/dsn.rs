@@ -125,15 +125,25 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
             .outbound
             .iter()
             .filter_map(|item| match item {
-                OutboundConfig::Dsn(opt) => opt.as_ref().map(|dsn_str| (dsn_str.clone(), vec![], 1)),
-                OutboundConfig::Detailed { dsn, categories, multiplier } => {
+                OutboundConfig::Dsn(opt) => {
+                    opt.as_ref().map(|dsn_str| (dsn_str.clone(), vec![], 1))
+                }
+                OutboundConfig::Detailed {
+                    dsn,
+                    categories,
+                    multiplier,
+                } => {
                     let categories = categories.clone().unwrap_or(vec![]);
                     Some((dsn.clone(), categories, *multiplier))
                 }
             })
             .map(|(outbound_str, categories, multiplier)| {
                 let dsn = outbound_str.parse::<Dsn>().expect("Invalid outbound DSN");
-                OutboundEntry { dsn, categories, multiplier }
+                OutboundEntry {
+                    dsn,
+                    categories,
+                    multiplier,
+                }
             })
             .collect::<Vec<OutboundEntry>>();
         keymap.insert(

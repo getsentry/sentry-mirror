@@ -158,10 +158,17 @@ mod tests {
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories, multiplier } => {
+            OutboundConfig::Detailed {
+                dsn,
+                categories,
+                multiplier,
+            } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(categories, Some(vec!["event".to_string()]));
-                assert_eq!(multiplier, 1, "multiply should default to 1 when not specified");
+                assert_eq!(
+                    multiplier, 1,
+                    "multiply should default to 1 when not specified"
+                );
             }
             _ => panic!("Expected Detailed variant"),
         }
@@ -174,9 +181,16 @@ mod tests {
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories: _, multiplier } => {
+            OutboundConfig::Detailed {
+                dsn,
+                categories: _,
+                multiplier,
+            } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
-                assert_eq!(multiplier, 5, "multiply should be 5 when explicitly specified");
+                assert_eq!(
+                    multiplier, 5,
+                    "multiply should be 5 when explicitly specified"
+                );
             }
             _ => panic!("Expected Detailed variant"),
         }
@@ -189,9 +203,16 @@ mod tests {
         let config: OutboundConfig = serde_json::from_str(json).unwrap();
 
         match config {
-            OutboundConfig::Detailed { dsn, categories, multiplier } => {
+            OutboundConfig::Detailed {
+                dsn,
+                categories,
+                multiplier,
+            } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
-                assert_eq!(categories, None, "categories should be None when not specified");
+                assert_eq!(
+                    categories, None,
+                    "categories should be None when not specified"
+                );
                 assert_eq!(multiplier, 1, "multiply should default to 1");
             }
             _ => panic!("Expected Detailed variant"),
