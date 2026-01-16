@@ -119,4 +119,7 @@ jobs:
             docker manifest push $REGISTRY:$TAG
           done
 
-          echo '### Published SHA \n\n${{ github.sha }}' >> $GITHUB_STEP_SUMMARY
+          echo '### Published Images' >> $GITHUB_STEP_SUMMARY
+          echo '' >> $GITHUB_STEP_SUMMARY
+          echo '- `${{ env.REGISTRY }}:${{ github.sha }}-amd64`' >> $GITHUB_STEP_SUMMARY
+          echo '- `${{ env.REGISTRY }}:${{ github.sha }}-arm64`' >> $GITHUB_STEP_SUMMARY
