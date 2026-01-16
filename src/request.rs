@@ -158,16 +158,16 @@ fn build_envelope_body(bytes: &[u8], categories: &[String]) -> Option<Vec<u8>> {
 ///
 /// - Replace the DSN key in the envelope header with the outbound DSN.
 /// - Will filter envelope items based on the categories.
-/// - Will multiply matching item types based on multiplier. Each copy
-///   will have a unique id generated for it to preserve the projectid + eventid
-///   uniqueness constraints
+/// - Can replace event ids in event headers which is necessary when mirror
+///   is multiplying requests. Each copy needs a different eventid to preserve
+///   the eventid + project uniqueness.
 ///
 /// See the envelope specs https://develop.sentry.dev/sdk/envelopes/
 pub fn modify_envelope(
     body: &Bytes,
     outbound: &dsn::Dsn,
     categories: &[String],
-    multiplier: usize,
+    replace_item_id: bool,
 ) -> Option<Bytes> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
@@ -200,7 +200,8 @@ pub fn modify_envelope(
         json_header["trace"]["public_key"] = Value::String(outbound.public_key.clone());
         modified = true;
     }
-    if !modified {
+
+    if !modified && !replace_item_id {
         return None;
     }
 
@@ -209,25 +210,31 @@ pub fn modify_envelope(
         None => return None,
     };
 
-    // When multiplier > 1, create multiple complete envelopes, each with a unique event_id
-    if multiplier > 1 {
-        let mut output = Vec::with_capacity(body.len() * multiplier);
+    warn!("replacing id {}", replace_item_id);
+    if replace_item_id {
+        let mut output = Vec::with_capacity(body.len());
+        let mut header_copy = json_header.clone();
 
-        for _ in 0..multiplier {
-            // Generate a unique event_id for each copy, as eventid + project must be unique.
+        // Generate a unique event_id for each copy, as eventid + project must be unique.
+        // if header_copy.get("event_id").is_some() {
             let new_event_id = Uuid::new_v4().to_string();
-            let mut header_copy = json_header.clone();
+            warn!("new eventid {}", &new_event_id);
             header_copy["event_id"] = Value::String(new_event_id);
+        // }
 
-            let envelope_body = match build_envelope_body(envelope_body_bytes, categories) {
-                Some(body) => body,
-                None => return None,
-            };
+        let envelope_body = match build_envelope_body(envelope_body_bytes, categories) {
+            Some(body) => body,
+            None => {
+                warn!("none from build");
+                return None
+            },
+        };
 
-            output.extend_from_slice(header_copy.to_string().as_bytes());
-            output.push(b'\n');
-            output.extend_from_slice(&envelope_body);
-        }
+        output.extend_from_slice(header_copy.to_string().as_bytes());
+        output.push(b'\n');
+        output.extend_from_slice(&envelope_body);
+        output.push(b'\n');
+        warn!("updated body {}", String::from_utf8(output.clone()).unwrap());
 
         Some(Bytes::from(output))
     } else {
@@ -605,7 +612,7 @@ mod tests {
             .parse()
             .unwrap();
         let body = Bytes::from("");
-        let result = modify_envelope(&body, &outbound, &[], 1);
+        let result = modify_envelope(&body, &outbound, &[], true);
 
         assert!(result.is_none());
     }
@@ -617,7 +624,7 @@ mod tests {
             .unwrap();
         let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], 1);
+        let result = modify_envelope(&body, &outbound, &[], true);
 
         assert!(result.is_none());
     }
@@ -629,7 +636,7 @@ mod tests {
             .unwrap();
         let lines = vec![r#"{"dsn":"value"}"#, r#"{"second":"line", "dsn":"value"}"#];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], 1);
+        let result = modify_envelope(&body, &outbound, &[], true);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
@@ -651,7 +658,7 @@ mod tests {
             r#"{"message":"something failed"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], 1);
+        let result = modify_envelope(&body, &outbound, &[], true);
 
         assert!(result.is_some());
 
@@ -676,7 +683,7 @@ mod tests {
             r#"{"second":"line", "dsn":"value"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], 1);
+        let result = modify_envelope(&body, &outbound, &[], true);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
@@ -965,73 +972,7 @@ mod tests {
     }
 
     #[test]
-    fn test_modify_envelope_multipler_unique_event_ids() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
-
-        let mut body = Vec::new();
-        // Envelope header with event_id
-        body.extend_from_slice(
-            br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"5cb13bb8-eb7f-4a50-a8d8-9d309fd1049d"}"#,
-        );
-        body.push(b'\n');
-        // Event item
-        body.extend_from_slice(b"{\"type\":\"event\",\"length\":27}\n");
-        body.extend_from_slice(br#"{"message":"something failed"}"#);
-        body.push(b'\n');
-
-        let result = modify_envelope(&Bytes::from(body), &outbound, &[], 3);
-
-        assert!(result.is_some());
-        let new_body = result.unwrap();
-        let body_str = String::from_utf8(new_body.to_vec()).unwrap();
-
-        // Split by lines and filter for envelope headers (contain event_id but not "type")
-        let envelope_headers: Vec<&str> = body_str
-            .lines()
-            .filter(|line| line.contains("event_id") && !line.contains(r#""type""#))
-            .collect();
-
-        assert_eq!(
-            envelope_headers.len(),
-            3,
-            "Should have 3 envelope headers with event_id"
-        );
-
-        // Parse each header and extract event_id
-        let mut event_ids = Vec::new();
-        for header in &envelope_headers {
-            let json: Value = serde_json::from_str(header).unwrap();
-            let event_id = json.get("event_id").unwrap().as_str().unwrap();
-            event_ids.push(event_id.to_string());
-        }
-
-        // Verify all event_ids are unique
-        assert_eq!(event_ids.len(), 3);
-        assert_ne!(event_ids[0], event_ids[1], "Event IDs should be unique");
-        assert_ne!(event_ids[1], event_ids[2], "Event IDs should be unique");
-        assert_ne!(event_ids[0], event_ids[2], "Event IDs should be unique");
-
-        // Verify none of them are the original event_id
-        assert_ne!(
-            event_ids[0], "5cb13bb8-eb7f-4a50-a8d8-9d309fd1049d",
-            "Should not use original event_id"
-        );
-
-        // Verify all envelopes have the updated DSN
-        for header in &envelope_headers {
-            let json: Value = serde_json::from_str(header).unwrap();
-            let dsn = json.get("dsn").unwrap().as_str().unwrap();
-            assert_eq!(
-                dsn, "https://outbound@o789.ingest.sentry.io/6789",
-                "DSN should be updated"
-            );
-        }
-    }
-
-    #[test]
-    fn test_modify_envelope_multiplier_with_categories() {
+    fn test_modify_envelope_replace_item_id_with_categories() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -1045,36 +986,28 @@ mod tests {
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
         body.push(b'\n');
-        // Event item (should be multiplied)
+        // Event item (should be included)
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
         let categories = vec!["event".to_string()];
-        let result = modify_envelope(&Bytes::from(body), &outbound, &categories, 2);
+        let result = modify_envelope(&Bytes::from(body), &outbound, &categories, true);
 
         assert!(result.is_some());
         let new_body = result.unwrap();
         let body_str = String::from_utf8(new_body.to_vec()).unwrap();
+        dbg!(&body_str);
 
         // Count envelope headers (lines containing event_id)
-        let envelope_header_count = body_str.lines().filter(|line| line.contains("event_id")).count();
-        assert_eq!(
-            envelope_header_count, 2,
-            "Should have 2 envelope headers when multiplier=2"
-        );
+        let item_headers: Vec<&str> = body_str.lines().filter(|line| line.contains("event_id")).collect();
+        let first_header = item_headers.first().unwrap();
+        assert!(!first_header.contains("original-id"));
 
-        // Count event items (lines containing "type\":\"event")
-        let event_item_count = body_str
-            .lines()
-            .filter(|line| line.contains(r#""type":"event""#))
-            .count();
-        assert_eq!(
-            event_item_count, 2,
-            "Should have 2 event items when multiplier=2 with event category"
+        assert!(
+            !body_str.contains("original-id"),
+            "Original event_id should be replaced"
         );
-
-        // Verify attachment is not included (categories filter)
         assert!(
             !body_str.contains("attachment"),
             "Attachment should be filtered out"
