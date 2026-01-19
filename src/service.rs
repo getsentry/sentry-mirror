@@ -128,39 +128,47 @@ where
     // we use the body of the first response
     let mut responses = Vec::new();
     for outbound in keyring.outbound.iter() {
-        let outbound_host = outbound.dsn.host.clone();
-        metrics::counter!(
-            "handle_proxy.outbound_request.start",
-            "outbound_host" => outbound_host.clone()
-        )
-        .increment(1);
-        debug!("Creating outbound request for {0}", &outbound_host);
+        let multiplier = outbound.multiplier;
+        for i in 0..multiplier {
+            let outbound_host = outbound.dsn.host.clone();
+            metrics::counter!(
+                "handle_proxy.outbound_request.start",
+                "outbound_host" => outbound_host.clone()
+            )
+            .increment(1);
+            debug!("Creating outbound request for {0}", &outbound_host);
 
-        let build_request_timer = Instant::now();
-        let request_builder =
-            request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
+            let build_request_timer = Instant::now();
+            let request_builder =
+                request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
 
-        let body_out = if state.config.modify_envelope {
-            match request::modify_envelope(&body_bytes, &outbound.dsn, &outbound.categories) {
-                Some(new_body) => new_body,
-                None => body_bytes.clone(),
+            let body_out = if state.config.modify_envelope {
+                match request::modify_envelope(
+                    &body_bytes,
+                    &outbound.dsn,
+                    &outbound.categories,
+                    i > 0,
+                ) {
+                    Some(new_body) => new_body,
+                    None => body_bytes.clone(),
+                }
+            } else {
+                body_bytes.clone()
+            };
+
+            let request = request_builder.body(Full::new(body_out));
+            metrics::histogram!(
+                "handle_proxy.build_request.duration",
+                "outbound_host" => outbound_host.clone()
+            )
+            .record(build_request_timer.elapsed());
+
+            if let Ok(outbound_request) = request {
+                let fut_res = send_request(&state.client, outbound_request, outbound_host.clone());
+                responses.push(fut_res);
+            } else {
+                warn!("Could not build request {0:?}", request.err());
             }
-        } else {
-            body_bytes.clone()
-        };
-
-        let request = request_builder.body(Full::new(body_out));
-        metrics::histogram!(
-            "handle_proxy.build_request.duration",
-            "outbound_host" => outbound_host.clone()
-        )
-        .record(build_request_timer.elapsed());
-
-        if let Ok(outbound_request) = request {
-            let fut_res = send_request(&state.client, outbound_request, outbound_host.clone());
-            responses.push(fut_res);
-        } else {
-            warn!("Could not build request {0:?}", request.err());
         }
     }
     let mut found_body = false;

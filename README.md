@@ -23,7 +23,8 @@ keys:
       - https://public-key-blue@o456.ingest.us.sentry.io/654321
 ```
 
-You can also enable selective forwarding to an outbound DSN based on envelope item categories:
+You can also enable selective forwarding to an outbound DSN based on envelope item categories,
+and item multipliers:
 
 ```yaml
 ip: 0.0.0.0
@@ -34,10 +35,14 @@ keys:
       - https://public-key-red@o123.ingest.de.sentry.io/123456
       - dsn: https://public-key-blue@o456.ingest.us.sentry.io/654321
         categories: [error, transaction, profile]
+        multiplier: 5
 ```
 
-When categories is a non-empty list only those categories will be forwarded. If
-the category list is empty or undefined *all categories* will be forwarded.
+When `categories` is a non-empty list only those categories will be forwarded. If
+the category list is empty or undefined *all categories* will be forwarded. When `multiplier`
+is used, mirror will copy matching envelope items *n* times. Each copy will have a 
+unique `event_id` assigned to it. Multipliers are useful when you need to amplify writes
+from an application to increase load on a sentry instance.
 
 ## Request rewriting
 

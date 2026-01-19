@@ -24,7 +24,13 @@ pub enum OutboundConfig {
     Detailed {
         dsn: String,
         categories: Option<Vec<String>>,
+        #[serde(default = "default_multiplier")]
+        multiplier: usize,
     },
+}
+
+fn default_multiplier() -> usize {
+    1
 }
 
 /// A set of inbound and outbound keys.
@@ -139,4 +145,77 @@ pub fn from_args(args: &Args) -> Result<ConfigData, Box<figment::Error>> {
 pub fn get_version() -> &'static str {
     let release_name = fs::read_to_string("./VERSION").expect("Unable to read version");
     Box::leak(release_name.into_boxed_str())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_outbound_config_mult_optional() {
+        // Test that multiplier is optional and defaults to 1 when not specified
+        let json = r#"{"dsn": "https://key@sentry.io/123", "categories": ["event"]}"#;
+        let config: OutboundConfig = serde_json::from_str(json).unwrap();
+
+        match config {
+            OutboundConfig::Detailed {
+                dsn,
+                categories,
+                multiplier,
+            } => {
+                assert_eq!(dsn, "https://key@sentry.io/123");
+                assert_eq!(categories, Some(vec!["event".to_string()]));
+                assert_eq!(
+                    multiplier, 1,
+                    "multiply should default to 1 when not specified"
+                );
+            }
+            _ => panic!("Expected Detailed variant"),
+        }
+    }
+
+    #[test]
+    fn test_outbound_config_mult_specified() {
+        // Test that multiplier can be explicitly set
+        let json = r#"{"dsn": "https://key@sentry.io/123", "categories": [], "multiplier": 5}"#;
+        let config: OutboundConfig = serde_json::from_str(json).unwrap();
+
+        match config {
+            OutboundConfig::Detailed {
+                dsn,
+                categories: _,
+                multiplier,
+            } => {
+                assert_eq!(dsn, "https://key@sentry.io/123");
+                assert_eq!(
+                    multiplier, 5,
+                    "multiply should be 5 when explicitly specified"
+                );
+            }
+            _ => panic!("Expected Detailed variant"),
+        }
+    }
+
+    #[test]
+    fn test_outbound_config_only_dsn() {
+        // Test that only dsn is required, categories and multiplier are optional
+        let json = r#"{"dsn": "https://key@sentry.io/123"}"#;
+        let config: OutboundConfig = serde_json::from_str(json).unwrap();
+
+        match config {
+            OutboundConfig::Detailed {
+                dsn,
+                categories,
+                multiplier,
+            } => {
+                assert_eq!(dsn, "https://key@sentry.io/123");
+                assert_eq!(
+                    categories, None,
+                    "categories should be None when not specified"
+                );
+                assert_eq!(multiplier, 1, "multiply should default to 1");
+            }
+            _ => panic!("Expected Detailed variant"),
+        }
+    }
 }
