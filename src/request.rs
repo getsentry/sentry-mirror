@@ -139,11 +139,10 @@ fn build_envelope_body(
         let data_chunk = if let Some(event_id) = new_event_id.clone() {
             let data_chunk = &bytes[data_start..data_end];
 
-            
             if let Ok(mut payload) = serde_json::from_slice::<Value>(data_chunk) {
                 // event_id in the body can't have - in it.
                 payload["event_id"] = Value::String(event_id.replace("-", "").clone());
-                
+
                 serde_json::to_vec(&payload).unwrap()
             } else {
                 data_chunk.to_vec()
