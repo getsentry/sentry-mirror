@@ -139,10 +139,14 @@ where
             debug!("Creating outbound request for {0}", &outbound_host);
 
             let build_request_timer = Instant::now();
+
+            // Create a RequestBuilder for the outbound request.
             let request_builder =
                 request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
 
+            // Generate a new body for the request if modifying envelopes is enabled.
             let body_out = if state.config.modify_envelope {
+                // TODO this could use an enum to return different outcomes.
                 match request::modify_envelope(
                     &body_bytes,
                     &outbound.dsn,
@@ -150,7 +154,13 @@ where
                     i > 0,
                 ) {
                     Some(new_body) => new_body,
-                    None => body_bytes.clone(),
+                    None => {
+                        // Skip sending requests for that didn't yield an envelope
+                        // from filtering and mutations.
+                        warn!("modify envelope none");
+                        continue;
+                        // body_bytes.clone()
+                    },
                 }
             } else {
                 body_bytes.clone()

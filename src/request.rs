@@ -76,7 +76,8 @@ pub fn make_outbound_request(
     builder
 }
 
-fn build_envelope_body(
+/// Build a new envelope body by filtering items and replacing identifiers.
+fn modify_envelope_body(
     bytes: &[u8],
     categories: &[String],
     new_event_id: Option<String>,
@@ -84,14 +85,13 @@ fn build_envelope_body(
     let mut output = Vec::with_capacity(bytes.len());
     let mut position = 0;
 
-    // Iterate over blocks in envelope
+    // Iterate over item blocks in envelope
     while position < bytes.len() {
-        // Find the end of the header line (first \n)
-        // TODO this is brittle to \n\n between items
+        // Find the end of the item header line (first \n)
         let header_end = match bytes[position..].iter().position(|&x| x == b'\n') {
             Some(pos) => position + pos,
             None => {
-                warn!("Could not find header line ending");
+                warn!("Could not find item header line ending");
                 return None;
             }
         };
@@ -100,7 +100,7 @@ fn build_envelope_body(
         let header_str = match String::from_utf8(header_slice.to_vec()) {
             Ok(h) => h,
             Err(e) => {
-                warn!("Could not convert envelope header to String {0}", e);
+                warn!("Could not convert item header to String {0}", e);
                 return None;
             }
         };
@@ -108,7 +108,7 @@ fn build_envelope_body(
         let header_json: Value = match serde_json::from_str(&header_str) {
             Ok(v) => v,
             Err(e) => {
-                warn!("Could not convert envelope header to JSON {0}", e);
+                warn!("Could not convert item header to JSON {0}", e);
                 return None;
             }
         };
@@ -121,6 +121,7 @@ fn build_envelope_body(
         let length = match header_json.get("length").and_then(|v| v.as_u64()) {
             Some(len) => len as usize,
             None => {
+                // TODO We may need to scan for the \n.
                 warn!("Missing length field in header for block type {event_type}");
                 return None;
             }
@@ -135,13 +136,19 @@ fn build_envelope_body(
             return None;
         }
 
-        // This is janky and the unwrap should be fixed
-        let data_chunk = if let Some(event_id) = new_event_id.clone() {
+        let item_chunk = if let Some(event_id) = new_event_id.clone() {
             let data_chunk = &bytes[data_start..data_end];
 
             if let Ok(mut payload) = serde_json::from_slice::<Value>(data_chunk) {
-                // event_id in the body can't have - in it.
-                payload["event_id"] = Value::String(event_id.replace("-", "").clone());
+                // If the item has an event_id replace it and match the uuid convention
+                // in the payload.
+                if let Some(old_id) = payload.get("event_id") {
+                    payload["event_id"] = if old_id.to_string().contains("-") {
+                        Value::String(event_id.clone())
+                    } else {
+                        Value::String(event_id.replace("-", "").clone())
+                    };
+                }
 
                 serde_json::to_vec(&payload).unwrap()
             } else {
@@ -154,7 +161,7 @@ fn build_envelope_body(
         if categories.is_empty() || categories.contains(&event_type.to_string()) {
             output.extend_from_slice(header_slice);
             output.push(b'\n');
-            output.extend(data_chunk);
+            output.extend(item_chunk);
         }
 
         // Move to next block (skip past data and the trailing \n)
@@ -179,6 +186,8 @@ fn build_envelope_body(
 ///   the eventid + project uniqueness.
 ///
 /// See the envelope specs https://develop.sentry.dev/sdk/envelopes/
+///
+/// This method returns None if modifications failed or the envelope should be skipped.
 pub fn modify_envelope(
     body: &Bytes,
     outbound: &dsn::Dsn,
@@ -187,13 +196,45 @@ pub fn modify_envelope(
 ) -> Option<Bytes> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
+
+    // If we need to replace the event_id generate a new v4 uuid
+    let new_event_id = if replace_item_id {
+        Some(Uuid::new_v4().to_string())
+    } else {
+        None
+    };
+
+    // Replace dsn and id values in envelope header
     let envelope_header = match body_chunks.next() {
-        Some(b) => b.to_vec(),
+        Some(bytes) => match modify_envelope_header(bytes, outbound, &new_event_id) {
+            Some(header) => header,
+            None => return None,
+        },
         None => return None,
     };
+
+    // Filter and mutate envelope items if required.
+    let envelope_body_bytes = body_chunks.next()?;
+    let envelope_body = modify_envelope_body(envelope_body_bytes, categories, new_event_id)?;
+
+    // If all items were filtered out, we don't need to send the request.
+    if envelope_body.is_empty() {
+        return None;
+    }
+
+    let mut output = Vec::with_capacity(body.len());
+    output.extend_from_slice(envelope_header.as_bytes());
+    output.push(b'\n');
+    output.extend_from_slice(&envelope_body);
+
+    Some(Bytes::from(output))
+}
+
+/// Modify an envelope header and replace keys based on the outbound DSN and event_id.
+fn modify_envelope_header(envelope_header: &[u8], outbound_dsn: &dsn::Dsn, new_event_id: &Option<String>) ->  Option<String> {
     // We don't want to copy the entire body to String as
     // replays have blobs in them, and we only need the header.
-    let message_header = match String::from_utf8(envelope_header) {
+    let message_header = match String::from_utf8(envelope_header.to_vec()) {
         Ok(h) => h,
         Err(e) => {
             warn!("Could not convert envelope header to String {0}", e);
@@ -205,51 +246,20 @@ pub fn modify_envelope(
         Ok(data) => data,
         Err(_) => return None,
     };
-    let mut modified = false;
     if json_header.get("dsn").is_some() {
-        json_header["dsn"] = Value::String(outbound.to_string());
-        modified = true;
+        json_header["dsn"] = Value::String(outbound_dsn.to_string());
     }
     if let Some(trace) = json_header.get("trace")
         && trace.get("public_key").is_some()
     {
-        json_header["trace"]["public_key"] = Value::String(outbound.public_key.clone());
-        modified = true;
+        json_header["trace"]["public_key"] = Value::String(outbound_dsn.public_key.clone());
     }
 
-    if !modified && !replace_item_id {
-        return None;
+    if let Some(new_event_id) = new_event_id && json_header.get("event_id").is_some() {
+        json_header["event_id"] = Value::String(new_event_id.clone());
     }
 
-    let envelope_body_bytes = body_chunks.next()?;
-
-    if replace_item_id {
-        let mut output = Vec::with_capacity(body.len());
-        let mut header_copy = json_header.clone();
-
-        // Generate a unique event_id for each copy, as eventid + project must be unique.
-        let new_event_id = Uuid::new_v4().to_string();
-        if header_copy.get("event_id").is_some() {
-            header_copy["event_id"] = Value::String(new_event_id.clone());
-        }
-
-        let envelope_body =
-            build_envelope_body(envelope_body_bytes, categories, Some(new_event_id))?;
-
-        output.extend_from_slice(header_copy.to_string().as_bytes());
-        output.push(b'\n');
-        output.extend_from_slice(&envelope_body);
-        output.push(b'\n');
-
-        Some(Bytes::from(output))
-    } else {
-        let header_line = Bytes::from(json_header.to_string());
-        let envelope_body = build_envelope_body(envelope_body_bytes, categories, None)?;
-        let new_body =
-            Bytes::from([header_line, Bytes::from("\n"), Bytes::from(envelope_body)].concat());
-
-        Some(new_body)
-    }
+    Some(json_header.to_string())
 }
 
 fn replace_public_key(target: &str, outbound: &dsn::Dsn) -> String {
@@ -711,22 +721,6 @@ mod tests {
     }
 
     #[test]
-    fn modify_envelope_invalid_item_header() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
-        let lines = vec![
-            r#"{}"#,
-            r#"{"type":"event", "length":14}"#,
-            r#"{"hello":"hi"}"#,
-        ];
-        let body = string_list_to_bytes(lines);
-
-        let result = modify_envelope(&body, &outbound, &[], false);
-        assert!(result.is_none());
-    }
-
-    #[test]
     fn test_decode_body_gzip() {
         let contents = b"some content to be compressed";
         let mut encoder = GzEncoder::new(&contents[..], Compression::fast());
@@ -885,7 +879,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_envelope_body_empty_categories() {
+    fn test_modify_envelope_body_empty_categories() {
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
@@ -894,7 +888,7 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let categories: Vec<String> = vec![];
-        let result = build_envelope_body(&body, &categories, None);
+        let result = modify_envelope_body(&body, &categories, None);
 
         assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
@@ -905,7 +899,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_envelope_body_with_categories() {
+    fn test_modify_envelope_body_with_categories() {
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
@@ -914,7 +908,7 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let categories = vec!["event".to_string()];
-        let result = build_envelope_body(&body, &categories, None);
+        let result = modify_envelope_body(&body, &categories, None);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
@@ -929,28 +923,49 @@ mod tests {
     }
 
     #[test]
-    fn test_build_envelope_body_with_categories_replace_id() {
+    fn test_modify_envelope_body_replace_id_no_dashes() {
         let mut body = Vec::new();
-        body.extend_from_slice(b"{\"type\":\"event\",\"length\":43}\n");
-        body.extend_from_slice(b"{\"event_id\":\"old-event-id\",\"other\":\"value\"}");
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":41}\n");
+        body.extend_from_slice(b"{\"event_id\":\"oldeventid\",\"other\":\"value\"}");
 
-        let categories = vec!["event".to_string()];
-        let result = build_envelope_body(&body, &categories, Some("new-event-id".into()));
+        let categories = vec![];
+        let result = modify_envelope_body(&body, &categories, Some("new-event-id".into()));
 
         let mut expected = Vec::new();
-        expected.extend_from_slice(b"{\"type\":\"event\",\"length\":43}\n");
+        expected.extend_from_slice(b"{\"type\":\"event\",\"length\":41}\n");
         expected.extend_from_slice(b"{\"event_id\":\"neweventid\",\"other\":\"value\"}");
 
         assert!(result.is_some(), "Should return Some for valid input");
         assert_eq!(
             result.unwrap(),
             expected,
-            "Should include filtered block types"
+            "Should include filtered item types and match uuid dashes"
         );
     }
 
     #[test]
-    fn test_build_envelope_body_multiline_data() {
+    fn test_modify_envelope_body_replace_id_preserve_dashes() {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":43}\n");
+        body.extend_from_slice(b"{\"event_id\":\"old-event-id\",\"other\":\"value\"}");
+
+        let categories = vec![];
+        let result = modify_envelope_body(&body, &categories, Some("new-event-id".into()));
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"{\"type\":\"event\",\"length\":43}\n");
+        expected.extend_from_slice(b"{\"event_id\":\"new-event-id\",\"other\":\"value\"}");
+
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "Should include filtered block types and match uuid dash type"
+        );
+    }
+
+    #[test]
+    fn test_modify_envelope_body_multiline_data() {
         let mut body = Vec::new();
 
         let attachment_data = "hello\nhello";
@@ -967,7 +982,7 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &categories, None);
+        let result = modify_envelope_body(&body, &categories, None);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(attachment_header.as_bytes());
@@ -982,7 +997,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_envelope_body_binary_data() {
+    fn test_modify_envelope_body_binary_data() {
         let mut body = Vec::new();
 
         let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
@@ -996,7 +1011,7 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &categories, None);
+        let result = modify_envelope_body(&body, &categories, None);
 
         let mut expected = Vec::new();
         expected.extend_from_slice(binary_header.as_bytes());
@@ -1019,7 +1034,7 @@ mod tests {
     }
 
     #[test]
-    fn test_build_envelope_body_binary_data_replace_id() {
+    fn test_modify_envelope_body_binary_data_replace_id() {
         let mut body = Vec::new();
 
         let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
@@ -1034,7 +1049,7 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec!["attachment".to_string()];
-        let result = build_envelope_body(&body, &categories, Some("new-id".into()));
+        let result = modify_envelope_body(&body, &categories, Some("new-id".into()));
 
         let mut expected = Vec::new();
         expected.extend_from_slice(binary_header.as_bytes());
