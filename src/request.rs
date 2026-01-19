@@ -212,10 +212,7 @@ pub fn modify_envelope(
 
     // Replace dsn and id values in envelope header
     let envelope_header = match body_chunks.next() {
-        Some(bytes) => match modify_envelope_header(bytes, outbound, &new_event_id) {
-            Some(header) => header,
-            None => return None,
-        },
+        Some(bytes) => modify_envelope_header(bytes, outbound, &new_event_id)?,
         None => return None,
     };
 
@@ -237,7 +234,11 @@ pub fn modify_envelope(
 }
 
 /// Modify an envelope header and replace keys based on the outbound DSN and event_id.
-fn modify_envelope_header(envelope_header: &[u8], outbound_dsn: &dsn::Dsn, new_event_id: &Option<String>) ->  Option<String> {
+fn modify_envelope_header(
+    envelope_header: &[u8],
+    outbound_dsn: &dsn::Dsn,
+    new_event_id: &Option<String>,
+) -> Option<String> {
     // We don't want to copy the entire body to String as
     // replays have blobs in them, and we only need the header.
     let message_header = match String::from_utf8(envelope_header.to_vec()) {
@@ -261,7 +262,9 @@ fn modify_envelope_header(envelope_header: &[u8], outbound_dsn: &dsn::Dsn, new_e
         json_header["trace"]["public_key"] = Value::String(outbound_dsn.public_key.clone());
     }
 
-    if let Some(new_event_id) = new_event_id && json_header.get("event_id").is_some() {
+    if let Some(new_event_id) = new_event_id
+        && json_header.get("event_id").is_some()
+    {
         json_header["event_id"] = Value::String(new_event_id.clone());
     }
 
@@ -945,7 +948,10 @@ mod tests {
         let categories = vec!["transaction".to_string()];
         let result = modify_envelope_body(&body, &categories, None);
 
-        assert!(result.is_none(), "Should return none when there are no items");
+        assert!(
+            result.is_none(),
+            "Should return none when there are no items"
+        );
     }
 
     #[test]

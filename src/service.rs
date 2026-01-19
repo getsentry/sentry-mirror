@@ -157,9 +157,12 @@ where
                     None => {
                         // Skip sending requests for that didn't yield an envelope
                         // from filtering and mutations.
-                        debug!("Skipping sending envelope to {} as the body is empty", outbound_host);
+                        debug!(
+                            "Skipping sending envelope to {} as the body is empty",
+                            outbound_host
+                        );
                         continue;
-                    },
+                    }
                 }
             } else {
                 body_bytes.clone()
