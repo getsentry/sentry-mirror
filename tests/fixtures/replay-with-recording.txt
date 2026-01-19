@@ -1,0 +1,48 @@
+{"event_id":"36b75d9fa11f45459412a96c41bdf691"}
+{"type":"replay_event", "length":1189}
+{
+  "type": "replay_event",
+  "replay_id": "36b75d9fa11f45459412a96c41bdf691",
+  "replay_start_timestamp": 1710861499.287,
+  "replay_type": "session",
+  "segment_id": 0,
+  "trace_ids": ["905aef2282af5fe2ab2c93aa7a340521"],
+  "urls": [
+    "https://sentry.io/issues/",
+    "https://sentry.io/issues/?project=0&statsPeriod=7d&utc=true"
+  ],
+  "request": {
+    "url": "https://sentry.io/issues/?project=0&statsPeriod=7d&utc=true",
+    "headers": {
+      "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36"
+    }
+  },
+  "timestamp": 1710861507.579,
+  "event_id": "36b75d9fa11f45459412a96c41bdf691",
+  "environment": "prod",
+  "release": "frontend@f00",
+  "sdk": {
+    "integrations": [
+      "BrowserTracing",
+      "BrowserProfiling",
+      "Replay",
+      "ReplayCanvas"
+    ],
+    "name": "sentry.javascript.react",
+    "version": "7.105.0"
+  },
+  "tags": {
+    "sentry_version": "24.4.0.dev0"
+  },
+  "user": {
+    "ip_address": "127.0.0.1",
+    "email": "admin@sentry.io",
+    "id": 1,
+    "name": "Admin"
+  },
+  "contexts": { "organization": { "id": "0", "slug": "sentry" } },
+  "platform": "javascript"
+}
+{"type":"replay_recording","length":11}
+{"segment_id":0}
+Hello World
