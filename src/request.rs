@@ -172,7 +172,13 @@ fn modify_envelope_body(
             output.push(b'\n');
         }
     }
-    Some(output.trim_ascii().to_vec())
+
+    let trimmed = output.trim_ascii();
+    if trimmed.is_empty() {
+        return None;
+    }
+
+    Some(trimmed.to_vec())
 }
 
 /// Mutate the envelope body based on the outbound key configuration:
@@ -400,6 +406,11 @@ mod tests {
 
     fn make_test_config() -> ConfigData {
         ConfigData::default()
+    }
+
+    fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
+        let joined = lines.join("\n");
+        Bytes::from(joined)
     }
 
     #[test]
@@ -923,6 +934,21 @@ mod tests {
     }
 
     #[test]
+    fn test_modify_envelope_body_with_categories_filtered_item() {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
+        body.extend_from_slice(b"hello");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+
+        let categories = vec!["transaction".to_string()];
+        let result = modify_envelope_body(&body, &categories, None);
+
+        assert!(result.is_none(), "Should return none when there are no items");
+    }
+
+    #[test]
     fn test_modify_envelope_body_replace_id_no_dashes() {
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":41}\n");
@@ -1026,11 +1052,6 @@ mod tests {
             expected,
             "Should correctly handle binary data with embedded newline by using length field from header"
         );
-    }
-
-    fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
-        let joined = lines.join("\n");
-        Bytes::from(joined)
     }
 
     #[test]
