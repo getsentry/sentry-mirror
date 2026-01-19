@@ -1,0 +1,9 @@
+---
+ip: 0.0.0.0
+port: 3001
+log_filter: info
+keys:
+  - inbound: http://test-key-123@localhost:3001/456
+    outbound:
+      - dsn: "http://outbound-key-1@localhost:8001/789"
+      - dsn: "http://outbound-key-2@localhost:8002/789"
