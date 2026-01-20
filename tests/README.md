@@ -59,44 +59,6 @@ pytest tests/test_integration.py::test_mirror_forwards_to_all_outbound_servers -
 pytest tests/test_integration.py -v -k "error-python"
 ```
 
-## Test Structure
-
-### Files
-
-- `integration-test.yaml`: Test configuration with:
-  - Inbound DSN: `http://390bf7f953b7492c9007d2cf69078adf@localhost:3001/456`
-  - Outbound DSN 1: `http://d2030950546a6177f9cdb0663b069aed@localhost:8001/789`
-  - Outbound DSN 2: `http://e3141a61657b7288facec1774c17afbe@localhost:8002/789`
-  - **Note**: Keys must be exactly 32 hexadecimal characters (a-f, 0-9)
-
-- `stub_server.py`: HTTP server implementation that logs requests to files
-
-- `test_integration.py`: Integration test suite
-
-- `conftest.py`: Pytest configuration
-
-- `logs/`: Directory for stub server request logs (created automatically)
-
-### Test Flow
-
-Each test:
-1. Starts the mirror application (via `mirror_process` fixture)
-2. Starts two stub servers on ports 8001 and 8002 (via `stub_servers` fixture)
-3. Sends a payload from a fixture file to the mirror
-4. Verifies both stub servers received the forwarded request
-5. Validates the URLs and bodies match expectations
-6. Cleans up all processes
-
-## Fixtures
-
-The test uses these Sentry envelope fixtures:
-- `error-python.txt`: Python exception with stack trace
-- `error-attachment.txt`: Error with attachment
-- `logs.txt`: Log messages
-- `spans.txt`: Performance spans
-- `transaction-python.txt`: Transaction event
-- `replay-with-recording.txt`: Session replay with recording
-
 ## Troubleshooting
 
 ### Port Already in Use
