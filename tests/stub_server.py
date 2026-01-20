@@ -3,9 +3,11 @@ Simple HTTP stub server for integration testing.
 Logs all requests (URL and body) to a file.
 """
 import json
+
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
+import sys
 
 
 class StubHandler(BaseHTTPRequestHandler):
@@ -13,6 +15,7 @@ class StubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests."""
+        print(f"handle post {self.server.log_file}")
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8')
 
@@ -44,7 +47,6 @@ class StubServer:
         self.port = port
         self.log_file = log_file
         self.server = None
-        self.thread = None
 
         # Ensure log file directory exists
         Path(log_file).parent.mkdir(parents=True, exist_ok=True)
@@ -56,24 +58,17 @@ class StubServer:
         self.server = HTTPServer(('localhost', self.port), StubHandler)
         self.server.log_file = self.log_file
 
-        self.thread = Thread(target=self.server.serve_forever, daemon=True)
-        self.thread.start()
+        print(f"starting server on {self.port}")
+        self.server.serve_forever()
 
-    def stop(self):
-        """Stop the stub server."""
-        if self.server:
-            self.server.shutdown()
-            self.server.server_close()
 
-    def get_requests(self) -> list:
-        """Read and parse all logged requests."""
-        log_file = Path(self.log_file)
-        if not log_file.exists():
-            return []
+def run_server(argv: list[str]) -> None:
+    port = int(argv[1])
+    log_file = argv[2]
+    server = StubServer(port, log_file)
+    server.start()
 
-        requests = []
-        with open(log_file, 'r') as f:
-            for line in f:
-                if line.strip():
-                    requests.append(json.loads(line))
-        return requests
+
+if __name__ == "__main__":
+    print("Starting server", sys.argv)
+    run_server(sys.argv)
