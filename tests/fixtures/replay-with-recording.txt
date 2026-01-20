@@ -1,5 +1,5 @@
 {"event_id":"36b75d9fa11f45459412a96c41bdf691"}
-{"type":"replay_event", "length":1189}
+{"type":"replay_event","length":1188}
 {
   "type": "replay_event",
   "replay_id": "36b75d9fa11f45459412a96c41bdf691",
@@ -43,6 +43,6 @@
   "contexts": { "organization": { "id": "0", "slug": "sentry" } },
   "platform": "javascript"
 }
-{"type":"replay_recording","length":11}
+{"type":"replay_recording","length":28}
 {"segment_id":0}
 Hello World

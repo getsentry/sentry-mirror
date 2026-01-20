@@ -1,5 +1,5 @@
 {}
-{"type": "span", "item_count": 2, "content_type": "application/vnd.sentry.items.span.v2+json", "length":2084}
+{"type":"span","item_count":2,"content_type":"application/vnd.sentry.items.span.v2+json","length":2083}
 {
   "items": [
     {

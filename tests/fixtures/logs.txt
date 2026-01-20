@@ -1,5 +1,5 @@
 {"sdk": { "name": "sentry.javascript.browser", "version": "9.15.0" }}
-{"type": "log", "item_count": 6, "content_type": "application/vnd.sentry.items.log+json", "length":6035}
+{"type":"log","item_count":6,"content_type":"application/vnd.sentry.items.log+json","length":6034}
 {
   "items": [
     {

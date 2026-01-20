@@ -1,5 +1,5 @@
 {"event_id":"1d2b3c58-41b3-40df-92b9-a6be3fe3490e"}
-{"type":"transaction","length":4031}
+{"type":"transaction","length":4030}
 {
   "event_id": "1d2b3c5841b340df92b9a6be3fe3490e",
   "platform": "python",

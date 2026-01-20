@@ -64,9 +64,10 @@ pytest tests/test_integration.py -v -k "error-python"
 ### Files
 
 - `integration-test.yaml`: Test configuration with:
-  - Inbound DSN: `http://test-key-123@localhost:3001/456`
-  - Outbound DSN 1: `http://outbound-key-1@localhost:8001/789`
-  - Outbound DSN 2: `http://outbound-key-2@localhost:8002/789`
+  - Inbound DSN: `http://390bf7f953b7492c9007d2cf69078adf@localhost:3001/456`
+  - Outbound DSN 1: `http://d2030950546a6177f9cdb0663b069aed@localhost:8001/789`
+  - Outbound DSN 2: `http://e3141a61657b7288facec1774c17afbe@localhost:8002/789`
+  - **Note**: Keys must be exactly 32 hexadecimal characters (a-f, 0-9)
 
 - `stub_server.py`: HTTP server implementation that logs requests to files
 
