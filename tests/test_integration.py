@@ -327,3 +327,52 @@ def test_mirror_multiplies_envelopes(multiplier_mirror_process, stub_servers):
 
     assert len(server1_requests) == 1, f"Server 1 should receive 1 request, got {len(server1_requests)}"
     assert len(server2_requests) == 4, f"Server 2 should receive 4 requests, got {len(server2_requests)}"
+
+    def parse_envelope(envelope_body: str) -> tuple[dict, dict, dict]:
+        """Parse an envelope into its components (header, item header, payload)."""
+        lines = envelope_body.strip().split('\n', 2)
+        header = json.loads(lines[0])
+        item_header = json.loads(lines[1])
+        payload = json.loads(lines[2]) if len(lines) > 2 else {}
+        return header, item_header, payload
+
+    def normalize_event_ids(parsed_envelope: tuple[dict, dict, dict]) -> tuple[dict, dict, dict]:
+        """Replace all event_ids with a fixed value for comparison."""
+        header, item_header, payload = parsed_envelope
+        normalized_header = {**header, 'event_id': 'NORMALIZED'}
+
+        normalized_payload = payload.copy()
+        if 'event_id' in normalized_payload:
+            # Remove dashes from event_id in payload for normalized comparison
+            normalized_payload['event_id'] = 'NORMALIZED'
+
+        return normalized_header, item_header, normalized_payload
+
+    # Parse and extract event_ids from all envelopes
+    server1_header, server1_item_header, server1_payload = parse_envelope(server1_requests[0]['body'])
+    server2_parsed = [parse_envelope(req['body']) for req in server2_requests]
+
+    server2_event_ids = [header['event_id'] for header, _, _ in server2_parsed]
+
+    # Verify that all server2 requests have unique event_ids
+    assert len(set(server2_event_ids)) == 4, \
+        f"All 4 server2 requests should have unique event_ids, got: {server2_event_ids}"
+
+    # Verify that all event_ids are valid UUIDs
+    for event_id in server2_event_ids:
+        assert len(event_id) == 36, f"Event ID should be 36 characters (UUID format), got {len(event_id)}: {event_id}"
+        assert event_id.count('-') == 4, f"Event ID should have 4 dashes (UUID format), got: {event_id}"
+
+    # Normalize event_ids and compare parsed structures
+    normalized_server1 = normalize_event_ids((server1_header, server1_item_header, server1_payload))
+
+    for i, parsed in enumerate(server2_parsed):
+        normalized_server2 = normalize_event_ids(parsed)
+
+        # Compare each component
+        assert normalized_server2[0] == normalized_server1[0], \
+            f"Server2 request {i} header should match server1 after normalization"
+        assert normalized_server2[1] == normalized_server1[1], \
+            f"Server2 request {i} item header should match server1"
+        assert normalized_server2[2] == normalized_server1[2], \
+            f"Server2 request {i} payload should match server1 after event_id normalization"
