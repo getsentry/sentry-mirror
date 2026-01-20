@@ -15,7 +15,6 @@ class StubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests."""
-        print(f"handle post {self.server.log_file}")
         content_length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(content_length).decode('utf-8')
 

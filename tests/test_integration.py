@@ -3,14 +3,17 @@ import logging
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Any, TypedDict
 
 import pytest
 import requests
 
-from stub_server import StubServer
-
 logger = logging.getLogger(__name__)
+
+
+class ServerMetadata(TypedDict):
+    process: subprocess.Popen
+    logfile: str
 
 
 @pytest.fixture
@@ -66,25 +69,33 @@ def mirror_process():
 @pytest.fixture
 def stub_servers():
     """Start the two stub servers and ensure they shut down after tests."""
+    timestamp = int(time.time())
+    server_one_log = f"tests/logs/server1-{timestamp}.log"
+    server_two_log = f"tests/logs/server2-{timestamp}.log"
 
     server1 = subprocess.Popen(
-        ["python", "tests/stub_server.py", "8001", "tests/logs/server1.log"],
+        ["python", "tests/stub_server.py", "8001", server_one_log],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     server2 = subprocess.Popen(
-        ["python", "tests/stub_server.py", "8002", "tests/logs/server2.log"],
+        ["python", "tests/stub_server.py", "8002", server_two_log],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
     )
     logger.info("Starting StubServers")
+    logger.info(f"server1 - port=8001 logfile={server_one_log}")
+    logger.info(f"server2 - port=8002 logfile={server_two_log}")
 
     # Give servers time to start
     time.sleep(0.5)
 
-    yield server1, server2
+    yield (
+        {"process": server1, "logfile": server_one_log},
+        {"process": server2, "logfile": server_two_log},
+    )
 
     # Cleanup
     logger.info("Killing StubServers")
@@ -133,14 +144,14 @@ def send_envelope_to_mirror(fixture_path: Path):
 
 @pytest.mark.parametrize("fixture_name", [
     "error-python.txt",
-    # "error-attachment.txt",
-    # "logs.txt",
-    # "spans.txt",
-    # "transaction-python.txt",
+    "error-attachment.txt",
+    "logs.txt",
+    "spans.txt",
+    "transaction-python.txt",
 ])
 def test_mirror_forwards_to_all_outbound_servers(
     mirror_process: subprocess.Popen,
-    stub_servers: list[subprocess.Popen],
+    stub_servers: list[ServerMetadata],
     fixture_name: str
 ):
     """
@@ -164,8 +175,9 @@ def test_mirror_forwards_to_all_outbound_servers(
     time.sleep(1)
 
     # Verify both servers received requests
-    server1_requests = read_logs("tests/logs/server1.log")
-    server2_requests = read_logs("tests/logs/server2.log")
+    server_one, server_two = stub_servers
+    server1_requests = read_logs(server_one["logfile"])
+    server2_requests = read_logs(server_two["logfile"])
 
     assert len(server1_requests) == 1, f"Server 1 should receive 1 request, got {len(server1_requests)}"
     assert len(server2_requests) == 1, f"Server 2 should receive 1 request, got {len(server2_requests)}"
@@ -194,8 +206,6 @@ def test_mirror_handles_replay_with_recording(mirror_process, stub_servers):
     This fixture contains multiple items in the envelope and may require
     special handling.
     """
-    server1, server2 = stub_servers
-
     fixture_path = Path(__file__).parent / "fixtures" / "replay-with-recording.txt"
     response = send_envelope_to_mirror(fixture_path)
 
@@ -205,9 +215,9 @@ def test_mirror_handles_replay_with_recording(mirror_process, stub_servers):
     # Give the mirror time to forward requests
     time.sleep(1)
 
-    # Verify both servers received requests
-    server1_requests = server1.get_requests()
-    server2_requests = server2.get_requests()
+    server_one, server_two = stub_servers
+    server1_requests = read_logs(server_one["logfile"])
+    server2_requests = read_logs(server_two["logfile"])
 
     assert len(server1_requests) == 1, f"Server 1 should receive 1 request, got {len(server1_requests)}"
     assert len(server2_requests) == 1, f"Server 2 should receive 1 request, got {len(server2_requests)}"
