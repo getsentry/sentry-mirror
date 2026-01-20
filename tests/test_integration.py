@@ -23,7 +23,7 @@ def mirror_process():
         stderr=subprocess.PIPE,
         text=True,
     )
-    logger.info("starting mirror")
+    logger.info("Starting mirror")
 
     # Wait for mirror to start (with longer timeout for compilation)
     # Check by trying to connect to the port
@@ -32,7 +32,7 @@ def mirror_process():
     mirror_ready = False
 
     while time.time() - start_time < max_wait:
-        logger.info("attempting to connect to mirror")
+        logger.info("Attempting to connect to mirror")
         try:
             import socket
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -59,7 +59,7 @@ def mirror_process():
     yield process
 
     # Cleanup
-    logger.info("killing mirror")
+    logger.info("Teardown mirror")
     kill_process(process)
 
 
@@ -79,6 +79,7 @@ def stub_servers():
         stderr=subprocess.PIPE,
         text=True,
     )
+    logger.info("Starting StubServers")
 
     # Give servers time to start
     time.sleep(0.5)
@@ -86,7 +87,7 @@ def stub_servers():
     yield server1, server2
 
     # Cleanup
-    logger.info("killing stub servers")
+    logger.info("Killing StubServers")
     kill_process(server1)
     kill_process(server2)
 
