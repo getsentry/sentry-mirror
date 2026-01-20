@@ -157,6 +157,11 @@ where
                     None => {
                         // Skip sending requests for that didn't yield an envelope
                         // from filtering and mutations.
+                        metrics::counter!(
+                            "handle_proxy.outbound_request.skipped",
+                            "outbound_host" => outbound_host.clone()
+                        )
+                        .increment(1);
                         debug!(
                             "Skipping sending envelope to {} as the body is empty",
                             outbound_host
