@@ -1,5 +1,6 @@
 import json
 import logging
+import socket
 import subprocess
 import time
 from pathlib import Path
@@ -16,6 +17,40 @@ class ServerMetadata(TypedDict):
     logfile: str
 
 
+def wait_for_server(process: subprocess.Popen, host: str, port: int) -> None:
+    """
+    Wait for a process to start on a specific host/port
+    """
+    # Wait for mirror to start (with longer timeout for compilation)
+    # Check by trying to connect to the port
+    max_wait = 30  # seconds
+    start_time = time.time()
+    ready = False
+
+    while time.time() - start_time < max_wait:
+        logger.info(f"Attempting to connect to {host}:{port}")
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)
+            result = sock.connect_ex((host, port))
+            sock.close()
+            if result == 0:
+                ready = True
+                break
+        except:
+            pass
+        time.sleep(0.5)
+
+    if not ready:
+        logger.info("Killing process as it didn't start")
+        process.kill()
+        stderr_output = process.stderr.read() if process.stderr else ""
+        raise RuntimeError(f"Process failed to start within {max_wait}s. Stderr: {stderr_output[-500:]}")
+
+    # Give it a moment to fully initialize
+    time.sleep(0.5)
+
+
 @pytest.fixture
 def mirror_process():
     """Start the mirror application and ensure it shuts down after tests."""
@@ -27,37 +62,27 @@ def mirror_process():
         text=True,
     )
     logger.info("Starting mirror")
+    wait_for_server(process, "localhost", 3001)
 
-    # Wait for mirror to start (with longer timeout for compilation)
-    # Check by trying to connect to the port
-    max_wait = 30  # seconds
-    start_time = time.time()
-    mirror_ready = False
+    yield process
 
-    while time.time() - start_time < max_wait:
-        logger.info("Attempting to connect to mirror")
-        try:
-            import socket
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(0.5)
-            result = sock.connect_ex(('localhost', 3001))
-            sock.close()
-            if result == 0:
-                mirror_ready = True
-                break
-        except:
-            pass
-        time.sleep(0.5)
+    # Cleanup
+    logger.info("Teardown mirror")
+    kill_process(process)
 
-    if not mirror_ready:
-        logger.info("Killing mirror as it didn't start")
-        process.kill()
-        stderr_output = process.stderr.read() if process.stderr else ""
-        raise RuntimeError(f"Mirror failed to start within {max_wait}s. Stderr: {stderr_output[-500:]}")
 
-    # Give it a moment to fully initialize
-    time.sleep(0.5)
-    logger.info("Mirror started")
+@pytest.fixture
+def category_mirror_process():
+    """Start the mirror application and ensure it shuts down after tests."""
+    config_path = Path(__file__).parent / "categories-test.yaml"
+    process = subprocess.Popen(
+        ["cargo", "run", "--", f"--config={config_path}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    logger.info("Starting mirror")
+    wait_for_server(process, "localhost", 3001)
 
     yield process
 
@@ -230,3 +255,34 @@ def test_mirror_handles_replay_with_recording(mirror_process, stub_servers):
     # Verify bodies match
     assert server1_requests[0]['body'] == server2_requests[0]['body']
     assert len(server1_requests[0]['body']) > 0
+
+
+def test_mirror_filters_envelopes(category_mirror_process, stub_servers):
+    """
+    Test that the mirror applies category based filtering
+
+    server_one will get an error, server_two will get an error and log
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "error-python.txt"
+    response = send_envelope_to_mirror(fixture_path)
+    assert response.status_code == 200, f"Mirror returned {response.status_code}"
+
+    fixture_path = Path(__file__).parent / "fixtures" / "logs.txt"
+    response = send_envelope_to_mirror(fixture_path)
+    assert response.status_code == 200, f"Mirror returned {response.status_code}"
+
+    # Give the mirror time to forward requests
+    time.sleep(1)
+
+    server_one, server_two = stub_servers
+    server1_requests = read_logs(server_one["logfile"])
+    server2_requests = read_logs(server_two["logfile"])
+
+    assert len(server1_requests) == 1, f"Server 1 should receive 1 request, got {len(server1_requests)}"
+    assert len(server2_requests) == 2, f"Server 2 should receive 2 requests, got {len(server2_requests)}"
+
+    # Verify that error bodies match
+    assert server1_requests[0]['body'] == server2_requests[0]['body']
+    assert len(server1_requests[0]['body']) > 0
+
+    assert '"type":"log",' in server2_requests[1]["body"]
