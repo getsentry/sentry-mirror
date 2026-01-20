@@ -1,4 +1,4 @@
-{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc","dsn":"https://e12d836b15bb49d7bbf99e64295d995b:@sentry.io/42"}
+{"event_id":"9ec79c33ec9942ab8353589fcb2e04dc"}
 {"type":"attachment","length":17,"content_type":"text/plain","filename":"hello.txt"}
 \xef\xbb\xbfHello
 {"type":"event","length":41,"content_type":"application/json","filename":"application.log"}
