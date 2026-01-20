@@ -92,6 +92,26 @@ def category_mirror_process():
 
 
 @pytest.fixture
+def multiplier_mirror_process():
+    """Start the mirror application and ensure it shuts down after tests."""
+    config_path = Path(__file__).parent / "multiplier-test.yaml"
+    process = subprocess.Popen(
+        ["cargo", "run", "--", f"--config={config_path}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    logger.info("Starting mirror")
+    wait_for_server(process, "localhost", 3001)
+
+    yield process
+
+    # Cleanup
+    logger.info("Teardown mirror")
+    kill_process(process)
+
+
+@pytest.fixture
 def stub_servers():
     """Start the two stub servers and ensure they shut down after tests."""
     timestamp = int(time.time())
@@ -286,3 +306,24 @@ def test_mirror_filters_envelopes(category_mirror_process, stub_servers):
     assert len(server1_requests[0]['body']) > 0
 
     assert '"type":"log",' in server2_requests[1]["body"]
+
+
+def test_mirror_multiplies_envelopes(multiplier_mirror_process, stub_servers):
+    """
+    Test that the mirror applies category based filtering
+
+    server_one will get one error, server_two will get 4 errors
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "error-python.txt"
+    response = send_envelope_to_mirror(fixture_path)
+    assert response.status_code == 200, f"Mirror returned {response.status_code}"
+
+    # Give the mirror time to forward requests
+    time.sleep(1)
+
+    server_one, server_two = stub_servers
+    server1_requests = read_logs(server_one["logfile"])
+    server2_requests = read_logs(server_two["logfile"])
+
+    assert len(server1_requests) == 1, f"Server 1 should receive 1 request, got {len(server1_requests)}"
+    assert len(server2_requests) == 4, f"Server 2 should receive 4 requests, got {len(server2_requests)}"
