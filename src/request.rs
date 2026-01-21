@@ -118,19 +118,27 @@ fn modify_envelope_body(
             .and_then(|v| v.as_str())
             .unwrap_or("");
 
+        // Item header and payload are separated by \n
+        let data_start = header_end + 1;
+
+        // Read the item length from the header. Or infer the `length` based on newlines.
+        // When items don't have `length` defined, payloads are assumed to be on a
+        // single line.
+        // Ref: https://develop.sentry.dev/sdk/data-model/envelopes/#items
         let length = match header_json.get("length").and_then(|v| v.as_u64()) {
             Some(len) => len as usize,
             None => {
-                // TODO We may need to scan for the \n.
-                warn!("Missing length field in header for block type {event_type}");
-                return None;
+                if let Some(next_line) = bytes[data_start..].iter().position(|&x| x == b'\n') {
+                    next_line
+                } else {
+                    // Assume we are at the terminal item in the envelope.
+                    debug!("Payload missing length, and no newline could be found for type={event_type}");
+                    bytes.len() - data_start
+                }
             }
         };
-
-        // Move past the header and its \n
-        let data_start = header_end + 1;
+        // Position of where the current item ends.
         let data_end = data_start + length;
-
         if data_end > bytes.len() {
             warn!("Data length {length} exceeds remaining bytes for block type {event_type}");
             return None;
@@ -138,7 +146,6 @@ fn modify_envelope_body(
 
         let item_chunk = if let Some(event_id) = new_event_id.clone() {
             let data_chunk = &bytes[data_start..data_end];
-
             if let Ok(mut payload) = serde_json::from_slice::<Value>(data_chunk) {
                 // If the item has an event_id replace it and match the uuid convention
                 // in the payload.
@@ -1026,6 +1033,52 @@ mod tests {
             expected,
             "Should correctly handle multiline data by using the length field from header"
         );
+    }
+
+    #[test]
+    fn test_modify_envelope_body_item_header_no_length() {
+        // When items don't have a length, we infer that the next line contains the entire payload.
+        // Multi-line payloads *must* have length defined.
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"event\"}\n");
+        body.extend_from_slice(b"{\"key\":\"value\", \"event_id\":\"replace\"}");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"feedback\"}\n");
+        body.extend_from_slice(b"{\"event_id\":\"replace\", \"contexts\":{\"feedback\":{}}}");
+
+        let categories: Vec<String> = vec![];
+        let result = modify_envelope_body(&body, &categories, Some("neweventid".into()));
+
+        let mut expected = Vec::new();
+        expected.extend_from_slice(b"{\"type\":\"event\"}\n");
+        expected.extend_from_slice(b"{\"event_id\":\"neweventid\",\"key\":\"value\"}");
+        expected.push(b'\n');
+        expected.extend_from_slice(b"{\"type\":\"feedback\"}\n");
+        expected.extend_from_slice(b"{\"contexts\":{\"feedback\":{}},\"event_id\":\"neweventid\"}");
+
+        assert!(result.is_some(), "Should return Some for valid input");
+        assert_eq!(
+            result.unwrap(),
+            expected,
+            "ID replacement should work with inferred lengths"
+        );
+    }
+
+    #[test]
+    fn test_modify_envelope_body_item_header_no_length_multiline_payload() {
+        // When items don't have a length, the item is supposed to be all on one line.
+        // This test covers non-compliant behavior as the item has no length and is multiline
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"type\":\"event\"}\n");
+        body.extend_from_slice(b"{\"key\":\"value\", \"event_id\":\"replace\"}");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"feedback\"}\n");
+        body.extend_from_slice(b"{\"event_id\":\"replace\", \n");
+        body.extend_from_slice(b"\"contexts\":{\"feedback\":{}}}");
+
+        let categories: Vec<String> = vec![];
+        let result = modify_envelope_body(&body, &categories, Some("neweventid".into()));
+        assert!(result.is_none(), "Should return None for invalid payloads");
     }
 
     #[test]
