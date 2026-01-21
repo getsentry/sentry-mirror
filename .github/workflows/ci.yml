@@ -77,7 +77,7 @@ jobs:
       - uses: getsentry/action-setup-venv@5a80476d175edf56cb205b08bc58986fa99d1725 # v3.2.0
         with:
           cache-dependency-path: uv.lock
-          install-cmd: uv sync --frozen --only-dev --active
+          install-cmd: uv sync --frozen --active
 
       - name: Run integration tests
         run: make test-integration

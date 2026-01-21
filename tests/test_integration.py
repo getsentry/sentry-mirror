@@ -366,6 +366,7 @@ def parse_envelope(envelope_body: str) -> tuple[dict, dict, dict]:
     payload = json.loads(lines[2]) if len(lines) > 2 else {}
     return header, item_header, payload
 
+
 def normalize_event_ids(parsed_envelope: tuple[dict, dict, dict]) -> tuple[dict, dict, dict]:
     """Replace all event_ids with a fixed value for comparison."""
     header, item_header, payload = parsed_envelope
