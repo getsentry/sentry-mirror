@@ -132,7 +132,9 @@ fn modify_envelope_body(
                     next_line
                 } else {
                     // Assume we are at the terminal item in the envelope.
-                    debug!("Payload missing length, and no newline could be found for type={event_type}");
+                    debug!(
+                        "Payload missing length, and no newline could be found for type={event_type}"
+                    );
                     bytes.len() - data_start
                 }
             }
