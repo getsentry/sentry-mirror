@@ -32,6 +32,29 @@ format: ## Run autofix mode for formatting and lint
 	cargo clippy --workspace --all-targets --all-features --no-deps --fix --allow-dirty --allow-staged -- -D warnings
 .PHONY: format
 
+# Python / Integration Tests
+
+.venv: ## Create a Python virtual environment using uv
+	uv venv .venv
+.PHONY: .venv
+
+install-python: .venv ## Install Python dependencies using uv
+	uv pip install -e .
+.PHONY: install-python
+
+test-integration: ## Run integration tests
+	. .venv/bin/activate && pytest tests/test_integration.py -v
+.PHONY: test-integration
+
+test-all: test test-integration ## Run all tests (unit and integration)
+.PHONY: test-all
+
+clean-python: ## Clean Python artifacts and logs
+	rm -rf .venv tests/logs/*.log
+	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+	find . -type f -name "*.pyc" -delete
+.PHONY: clean-python
+
 # Help
 
 help: ## this help

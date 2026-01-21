@@ -3,3 +3,7 @@
 /VERSION
 config.yml
 /.claude
+/tests/logs/
+/.venv/
+__pycache__/
+*.pyc

@@ -18,7 +18,7 @@ pub struct Dsn {
     pub secret_key: String,
     /// The sentry project ths DSN belongs to.
     pub project_id: String,
-    /// The DSN host, can either be an upstream or the local server instance.
+    /// The DSN host & port, can either be an upstream or the local server instance.
     pub host: String,
     /// The path components for the DSN. Generally just the project id.
     pub path: String,
@@ -70,10 +70,14 @@ impl FromStr for Dsn {
             None => "".to_string(),
         };
         let scheme = url.scheme().to_string();
-        let host = match url.host_str() {
+        let mut host = match url.host_str() {
             Some(h) => h.to_string(),
             None => return Err(DsnParseError::MissingHost),
         };
+        if let Some(port) = url.port() {
+            host = format!("{}:{}", host, port);
+        }
+
         let path = url.path().to_string();
         let mut path_segments = match url.path_segments() {
             Some(s) => s,
@@ -237,7 +241,7 @@ mod tests {
             .parse()
             .unwrap();
         assert_eq!("390bf7f953b7492c9007d2cf69078adf", dsn.public_key);
-        assert_eq!("localhost", dsn.host);
+        assert_eq!("localhost:8765", dsn.host);
         assert_eq!("1847101", dsn.project_id);
     }
 
