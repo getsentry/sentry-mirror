@@ -48,8 +48,8 @@ impl fmt::Display for Dsn {
         let scheme = &self.scheme;
         let public_key = &self.public_key;
         let host = &self.host;
-        let project_id = &self.project_id;
-        write!(f, "{scheme}://{public_key}@{host}/{project_id}")
+        let path = &self.path;
+        write!(f, "{scheme}://{public_key}@{host}{path}")
     }
 }
 
@@ -70,12 +70,13 @@ impl FromStr for Dsn {
             None => "".to_string(),
         };
         let scheme = url.scheme().to_string();
-        let mut host = match url.host_str() {
+        let mut host = match url.host() {
+            Some(url::Host::Ipv6(ip)) => format!("[{ip}]"),
             Some(h) => h.to_string(),
             None => return Err(DsnParseError::MissingHost),
         };
         if let Some(port) = url.port() {
-            host = format!("{}:{}", host, port);
+            host = format!("{host}:{port}");
         }
 
         let path = url.path().to_string();
@@ -243,6 +244,34 @@ mod tests {
         assert_eq!("390bf7f953b7492c9007d2cf69078adf", dsn.public_key);
         assert_eq!("localhost:8765", dsn.host);
         assert_eq!("1847101", dsn.project_id);
+        assert_eq!(
+            "http://390bf7f953b7492c9007d2cf69078adf@localhost:8765/1847101",
+            dsn.to_string()
+        );
+    }
+
+    #[test]
+    fn parse_from_string_with_port() {
+        let dsn: Dsn = "http://public-key@relay:3001/123456"
+            .parse()
+            .unwrap();
+        assert_eq!("public-key", dsn.public_key);
+        assert_eq!("relay:3001", dsn.host);
+        assert_eq!("123456", dsn.project_id);
+        assert_eq!(
+            "http://public-key@relay:3001/123456",
+            dsn.to_string()
+        );
+    }
+
+    #[test]
+    fn parse_from_string_ipv6() {
+        let dsn: Dsn = "http://390bf7f953b7492c9007d2cf69078adf@[::1]:8765/1847101"
+            .parse()
+            .unwrap();
+        assert_eq!("390bf7f953b7492c9007d2cf69078adf", dsn.public_key);
+        assert_eq!("[::1]:8765", dsn.host);
+        assert_eq!("1847101", dsn.project_id);
     }
 
     #[test]
@@ -293,6 +322,40 @@ mod tests {
             0,
             "ConfigKeyPair should have no categories"
         );
+    }
+
+    #[test]
+    fn make_key_map_preserves_custom_ports() {
+        let mut config = make_test_config();
+        config.keys = vec![ConfigKeyPair {
+            inbound: "http://390bf7f953b7492c9007d2cf69078adf@localhost:3001/456".to_string(),
+            outbound: vec![
+                OutboundConfig::Dsn(Some(
+                    "http://4c9330937fda0a7054e0628df7811e74@localhost:3001/4510448567582800"
+                        .to_string(),
+                )),
+                OutboundConfig::Dsn(Some(
+                    "http://5d0441a48bea1b8065f1729fe8922f95@relay:3002/9876".to_string(),
+                )),
+            ],
+        }];
+
+        let keymap = make_key_map(&config);
+        assert_eq!(keymap.len(), 1);
+        let value = keymap
+            .get("390bf7f953b7492c9007d2cf69078adf")
+            .expect("Should have a value");
+
+        // Verify inbound DSN preserves port
+        assert_eq!(value.inbound.host, "localhost:3001");
+        assert_eq!(value.inbound.project_id, "456");
+
+        // Verify outbound DSNs preserve ports
+        assert_eq!(value.outbound.len(), 2);
+        assert_eq!(value.outbound[0].dsn.host, "localhost:3001");
+        assert_eq!(value.outbound[0].dsn.project_id, "4510448567582800");
+        assert_eq!(value.outbound[1].dsn.host, "relay:3002");
+        assert_eq!(value.outbound[1].dsn.project_id, "9876");
     }
 
     #[test]

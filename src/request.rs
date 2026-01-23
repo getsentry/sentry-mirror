@@ -563,6 +563,26 @@ mod tests {
     }
 
     #[test]
+    fn make_outbound_request_with_custom_port() {
+        let config = ConfigData::default();
+        let outbound: dsn::Dsn = "http://public@relay:3001/123456"
+            .parse()
+            .unwrap();
+        let uri: Uri = "https://o123.ingest.sentry.io/api/1/envelope/"
+            .parse()
+            .unwrap();
+
+        let headers = HeaderMap::new();
+        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let res = builder.body("");
+        assert!(res.is_ok());
+        let req = res.unwrap();
+
+        let uri = req.uri();
+        assert_eq!(uri, "http://relay:3001/api/123456/envelope/");
+    }
+
+    #[test]
     fn make_outbound_request_replace_project_id_oltp_url() {
         let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
