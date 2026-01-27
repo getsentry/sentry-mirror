@@ -181,6 +181,12 @@ where
             .record(build_request_timer.elapsed());
 
             if let Ok(outbound_request) = request {
+                debug!(
+                    "Outbound request URI: {} (host: {}, port: {:?})",
+                    outbound_request.uri(),
+                    outbound_request.uri().authority().map(|a| a.as_str()).unwrap_or("none"),
+                    outbound_request.uri().port_u16()
+                );
                 let fut_res = send_request(&state.client, outbound_request, outbound_host.clone());
                 responses.push(fut_res);
             } else {
