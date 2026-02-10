@@ -16,14 +16,20 @@ class StubHandler(BaseHTTPRequestHandler):
     def do_POST(self):
         """Handle POST requests."""
         content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8')
+        content_type = self.headers.get('Content-Type')
+
+        body = self.rfile.read(content_length)
+        if content_type and content_type.startswith("application/json"):
+            body = body.decode('utf-8')
+        else:
+            # If we don't have json, its like a blob so bytestring
+            body = str(body)
 
         # Log the request
         log_entry = {
             'url': self.path,
             'body': body
         }
-
         log_file = Path(self.server.log_file)
         with open(log_file, 'a') as f:
             f.write(json.dumps(log_entry) + '\n')

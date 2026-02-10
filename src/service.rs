@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes};
-use hyper::{Method, StatusCode};
+use hyper::{HeaderMap, Method, StatusCode};
 use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
 
@@ -145,7 +145,7 @@ where
                 request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
 
             // Generate a new body for the request if modifying envelopes is enabled.
-            let body_out = if state.config.modify_envelope {
+            let body_out = if state.config.modify_envelope && is_json_request(&headers) {
                 // TODO this could use an enum to return different outcomes.
                 match request::modify_envelope(
                     &body_bytes,
@@ -242,6 +242,17 @@ where
     .increment(1);
 
     Ok(response_builder.body(full(resp_body)).unwrap())
+}
+
+/// Check if the request has a application/json content type
+fn is_json_request(headers: &HeaderMap) -> bool {
+    match headers.get("Content-Type") {
+        Some(value) => {
+            let str = value.to_str().unwrap_or("<invalid>");
+            str.starts_with("application/json")
+        }
+        None => false,
+    }
 }
 
 fn bad_request_response() -> Response<BoxBody> {

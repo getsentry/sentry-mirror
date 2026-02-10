@@ -56,7 +56,7 @@ def mirror_process():
     """Start the mirror application and ensure it shuts down after tests."""
     config_path = Path(__file__).parent / "integration-test.yaml"
     process = subprocess.Popen(
-        ["cargo", "run", "--", f"--config={config_path}"],
+        ["cargo", "run", "--", f"--config={config_path}", "--verbose"],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -69,6 +69,10 @@ def mirror_process():
     # Cleanup
     logger.info("Teardown mirror")
     kill_process(process)
+
+    logger.info("Mirror output")
+    logger.info(process.stdout.read())
+    logger.info(process.stderr.read())
 
 
 @pytest.fixture
@@ -187,6 +191,18 @@ def send_envelope_to_mirror(fixture_path: Path):
     return response
 
 
+def send_minidump_to_mirror(fixture_path: Path):
+    """Send a minidump from a fixture file to the mirror."""
+    with open(fixture_path, 'rb') as f:
+        mirror_url = "http://localhost:3001/api/456/minidump/"
+        headers = {
+            "X-Sentry-Auth": "Sentry sentry_key=390bf7f953b7492c9007d2cf69078adf, sentry_version=7"
+        }
+
+        response = requests.post(mirror_url, files={"upload_file_minidump": f.read()}, headers=headers)
+        return response
+
+
 @pytest.mark.parametrize("fixture_name", [
     "error-python.txt",
     "error-attachment.txt",
@@ -242,6 +258,40 @@ def test_mirror_forwards_to_all_outbound_servers(
 
     # Verify the body is not empty
     assert len(server1_requests[0]['body']) > 0, "Request body should not be empty"
+
+
+def test_mirror_forwards_minidumps(
+    mirror_process: subprocess.Popen,
+    stub_servers: list[ServerMetadata]
+):
+    server1, server2 = stub_servers
+
+    # Send the envelope
+    fixture_path = Path(__file__).parent / "fixtures" / "windows.dmp"
+    response = send_minidump_to_mirror(fixture_path)
+
+    # Check the mirror accepted the request
+    assert response.status_code == 200, f"Mirror returned {response.status_code}"
+
+    server1_requests = read_logs(server1["logfile"])
+    server2_requests = read_logs(server2["logfile"])
+
+    assert len(server1_requests) == 1, f"Server 1 should receive 1 request, got {len(server1_requests)}"
+    assert len(server2_requests) == 1, f"Server 2 should receive 1 request, got {len(server2_requests)}"
+
+    # Verify the URLs match the outbound configuration
+    # The outbound DSNs point to /789, so requests should be sent to /api/789/minidump/
+    expected_url = "/api/789/minidump/"
+
+    assert server1_requests[0]['url'] == expected_url, \
+        f"Server 1 URL mismatch: {server1_requests[0]['url']} != {expected_url}"
+    assert server2_requests[0]['url'] == expected_url, \
+        f"Server 2 URL mismatch: {server2_requests[0]['url']} != {expected_url}"
+
+    # Verify both servers received the same body
+    assert server1_requests[0]['body'] == server2_requests[0]['body'], \
+        "Both servers should receive the same body"
+    assert len(server1_requests[0]['body']) > 22000, "minidump fixture is more than 22KB"
 
 
 def test_mirror_handles_replay_with_recording(mirror_process, stub_servers):
