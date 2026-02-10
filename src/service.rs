@@ -184,7 +184,11 @@ where
                 debug!(
                     "Outbound request URI: {} (host: {}, port: {:?})",
                     outbound_request.uri(),
-                    outbound_request.uri().authority().map(|a| a.as_str()).unwrap_or("none"),
+                    outbound_request
+                        .uri()
+                        .authority()
+                        .map(|a| a.as_str())
+                        .unwrap_or("none"),
                     outbound_request.uri().port_u16()
                 );
                 let fut_res = send_request(&state.client, outbound_request, outbound_host.clone());

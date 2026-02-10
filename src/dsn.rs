@@ -252,16 +252,11 @@ mod tests {
 
     #[test]
     fn parse_from_string_with_port() {
-        let dsn: Dsn = "http://public-key@relay:3001/123456"
-            .parse()
-            .unwrap();
+        let dsn: Dsn = "http://public-key@relay:3001/123456".parse().unwrap();
         assert_eq!("public-key", dsn.public_key);
         assert_eq!("relay:3001", dsn.host);
         assert_eq!("123456", dsn.project_id);
-        assert_eq!(
-            "http://public-key@relay:3001/123456",
-            dsn.to_string()
-        );
+        assert_eq!("http://public-key@relay:3001/123456", dsn.to_string());
     }
 
     #[test]

@@ -565,9 +565,7 @@ mod tests {
     #[test]
     fn make_outbound_request_with_custom_port() {
         let config = ConfigData::default();
-        let outbound: dsn::Dsn = "http://public@relay:3001/123456"
-            .parse()
-            .unwrap();
+        let outbound: dsn::Dsn = "http://public@relay:3001/123456".parse().unwrap();
         let uri: Uri = "https://o123.ingest.sentry.io/api/1/envelope/"
             .parse()
             .unwrap();
