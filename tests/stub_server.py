@@ -2,6 +2,7 @@
 Simple HTTP stub server for integration testing.
 Logs all requests (URL and body) to a file.
 """
+
 import json
 
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -15,22 +16,28 @@ class StubHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         """Handle POST requests."""
-        content_length = int(self.headers.get('Content-Length', 0))
-        body = self.rfile.read(content_length).decode('utf-8')
+        content_length = int(self.headers.get("Content-Length", 0))
+        content_type = self.headers.get("Content-Type")
+
+        body = self.rfile.read(content_length)
+        if content_type and (
+            content_type.startswith("application/json")
+            or content_type.startswith("application/x-sentry-envelope")
+        ):
+            body = body.decode("utf-8")
+        else:
+            # If we don't have json, its like a blob so bytestring
+            body = str(body)
 
         # Log the request
-        log_entry = {
-            'url': self.path,
-            'body': body
-        }
-
+        log_entry = {"url": self.path, "body": body}
         log_file = Path(self.server.log_file)
-        with open(log_file, 'a') as f:
-            f.write(json.dumps(log_entry) + '\n')
+        with open(log_file, "a") as f:
+            f.write(json.dumps(log_entry) + "\n")
 
         # Send a successful response
         self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
+        self.send_header("Content-Type", "application/json")
         self.end_headers()
         self.wfile.write(b'{"status": "ok"}')
 
@@ -54,7 +61,7 @@ class StubServer:
 
     def start(self):
         """Start the stub server in a background thread."""
-        self.server = HTTPServer(('localhost', self.port), StubHandler)
+        self.server = HTTPServer(("localhost", self.port), StubHandler)
         self.server.log_file = self.log_file
 
         print(f"starting server on {self.port}")

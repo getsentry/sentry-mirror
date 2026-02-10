@@ -7,7 +7,7 @@ use tracing::{debug, warn};
 
 use http_body_util::{BodyExt, Full};
 use hyper::body::{Body, Bytes};
-use hyper::{Method, StatusCode};
+use hyper::{HeaderMap, Method, StatusCode};
 use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
 
@@ -145,7 +145,7 @@ where
                 request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
 
             // Generate a new body for the request if modifying envelopes is enabled.
-            let body_out = if state.config.modify_envelope {
+            let body_out = if state.config.modify_envelope && is_envelope_request(&headers) {
                 // TODO this could use an enum to return different outcomes.
                 match request::modify_envelope(
                     &body_bytes,
@@ -184,7 +184,11 @@ where
                 debug!(
                     "Outbound request URI: {} (host: {}, port: {:?})",
                     outbound_request.uri(),
-                    outbound_request.uri().authority().map(|a| a.as_str()).unwrap_or("none"),
+                    outbound_request
+                        .uri()
+                        .authority()
+                        .map(|a| a.as_str())
+                        .unwrap_or("none"),
                     outbound_request.uri().port_u16()
                 );
                 let fut_res = send_request(&state.client, outbound_request, outbound_host.clone());
@@ -242,6 +246,17 @@ where
     .increment(1);
 
     Ok(response_builder.body(full(resp_body)).unwrap())
+}
+
+/// Check if the request is json or an envelope type
+fn is_envelope_request(headers: &HeaderMap) -> bool {
+    match headers.get("Content-Type") {
+        Some(value) => {
+            let str = value.to_str().unwrap_or("<invalid>");
+            str.starts_with("application/json") || str.starts_with("application/x-sentry-envelope")
+        }
+        None => false,
+    }
 }
 
 fn bad_request_response() -> Response<BoxBody> {
