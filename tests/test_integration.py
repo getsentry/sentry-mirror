@@ -70,10 +70,6 @@ def mirror_process():
     logger.info("Teardown mirror")
     kill_process(process)
 
-    logger.info("Mirror output")
-    logger.info(process.stdout.read())
-    logger.info(process.stderr.read())
-
 
 @pytest.fixture
 def category_mirror_process():
@@ -147,8 +143,9 @@ def stub_servers():
     )
 
     # Cleanup
-    logger.info("Killing StubServers")
+    logger.info("Killing StubServer 1")
     kill_process(server1)
+    logger.info("Killing StubServer 2")
     kill_process(server2)
 
 
@@ -160,6 +157,9 @@ def kill_process(process: subprocess.Popen) -> None:
         process.kill()
         process.wait()
 
+    logger.info(f"process output {process.pid}")
+    logger.info(process.stdout.read())
+    logger.info(process.stderr.read())
 
 def read_logs(log_path: str) -> list[dict[str, Any]]:
     log_file = Path(log_path)
