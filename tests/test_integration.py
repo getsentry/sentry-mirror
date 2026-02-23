@@ -202,6 +202,22 @@ def send_minidump_to_mirror(fixture_path: Path):
         response = requests.post(mirror_url, files={"upload_file_minidump": f.read()}, headers=headers)
         return response
 
+def send_otlp_to_mirror(fixture_path: Path):
+    """Send an otlp payload from a fixture file to the mirror."""
+    with open(fixture_path, 'rb') as f:
+        envelope_data = f.read()
+
+    mirror_url = "http://localhost:3001/api/456/integration/otlp/v1/traces/"
+
+    headers = {
+        'Content-Type': 'application/x-protobuf',
+        'X-Sentry-Auth': 'Sentry sentry_key=390bf7f953b7492c9007d2cf69078adf, sentry_version=7',
+        'User-Agent': 'OTel-OTLP-Exporter-Python/1.39.1',
+    }
+
+    response = requests.post(mirror_url, data=envelope_data, headers=headers)
+    return response
+
 
 @pytest.mark.parametrize("fixture_name", [
     "error-python.txt",
@@ -319,6 +335,36 @@ def test_mirror_handles_replay_with_recording(mirror_process, stub_servers):
 
     # Verify the URLs match
     expected_url = "/api/789/envelope/"
+    assert server1_requests[0]['url'] == expected_url
+    assert server2_requests[0]['url'] == expected_url
+
+    # Verify bodies match
+    assert server1_requests[0]['body'] == server2_requests[0]['body']
+    assert len(server1_requests[0]['body']) > 0
+
+
+def test_mirror_handles_otlp_integration(mirror_process, stub_servers):
+    """
+    Test that the mirror handles otlp proto bodies
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "otlp-spans.proto"
+    response = send_otlp_to_mirror(fixture_path)
+
+    # Check the mirror accepted the request
+    assert response.status_code == 200, f"Mirror returned {response.status_code}"
+
+    # Give the mirror time to forward requests
+    time.sleep(1)
+
+    server_one, server_two = stub_servers
+    server1_requests = read_logs(server_one["logfile"])
+    server2_requests = read_logs(server_two["logfile"])
+
+    assert len(server1_requests) == 1, f"Server 1 should receive 1 request, got {len(server1_requests)}"
+    assert len(server2_requests) == 1, f"Server 2 should receive 1 request, got {len(server2_requests)}"
+
+    # Verify the URLs match
+    expected_url = "/api/789/integration/otlp/v1/traces/"
     assert server1_requests[0]['url'] == expected_url
     assert server2_requests[0]['url'] == expected_url
 
