@@ -6,7 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "pytest>=9.0.3",
     "requests>=2.31.0",
-    "urllib3>=2.6.0",
+    "urllib3>=2.7.0",
 ]
 
 [build-system]
