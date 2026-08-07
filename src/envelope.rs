@@ -165,7 +165,7 @@ fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
         let data_end = data_start + length;
         if data_end > body.len() {
             warn!("Data length {length} exceeds remaining bytes");
-            return items;
+            return vec![];
         }
         let item_bytes = Bytes::from((body[data_start..data_end]).to_owned());
 
@@ -225,6 +225,9 @@ mod tests {
             br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"original-id"}"#,
         );
         body.push(b'\n');
+        // Feedback item that is ok
+        body.extend_from_slice(b"{\"type\":\"feedback\",\"length\":40}\n");
+        body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
         // Feedback item with overflow length attribute
         body.extend_from_slice(b"{\"type\":\"feedback\",\"length\":400000}\n");
         body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
