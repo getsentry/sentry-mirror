@@ -162,7 +162,10 @@ fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
             }
         };
         // Position of where the current item ends.
-        let data_end = data_start + length;
+        let Some(data_end) = data_start.checked_add(length) else {
+            warn!("Data length {length} overflows u64");
+            return vec![];
+        };
         if data_end > body.len() {
             warn!("Data length {length} exceeds remaining bytes");
             return vec![];
@@ -218,7 +221,7 @@ mod tests {
     }
 
     #[test]
-    fn test_parse_envelope_item_length_overflow() {
+    fn test_parse_envelope_item_length_overflow_body() {
         let mut body = Vec::new();
         // Envelope header
         body.extend_from_slice(
@@ -230,6 +233,25 @@ mod tests {
         body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
         // Feedback item with overflow length attribute
         body.extend_from_slice(b"{\"type\":\"feedback\",\"length\":400000}\n");
+        body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
+
+        let res = parse(body.as_slice());
+        assert!(res.is_none());
+    }
+
+    #[test]
+    fn test_parse_envelope_item_length_overflow_u64() {
+        let mut body = Vec::new();
+        // Envelope header
+        body.extend_from_slice(
+            br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"original-id"}"#,
+        );
+        body.push(b'\n');
+        // Feedback item that is ok
+        body.extend_from_slice(b"{\"type\":\"feedback\",\"length\":40}\n");
+        body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
+        // Feedback item with overflow length attribute
+        body.extend(format!("{{\"type\":\"feedback\",\"length\":{}}}\n", usize::MAX).as_bytes());
         body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
 
         let res = parse(body.as_slice());
