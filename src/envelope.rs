@@ -75,6 +75,7 @@ impl EnvelopeItem {
 }
 
 /// Extract an Envelope out of a byte stream
+/// Will return None when no items can be parsed, or the body has no newlines.
 pub fn parse(body: &[u8]) -> Option<Envelope> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
@@ -85,6 +86,11 @@ pub fn parse(body: &[u8]) -> Option<Envelope> {
         None => return None,
     };
     let items = parse_envelope_items(body_chunks.next());
+    // If we failed to parse any items, we don't want a partial envelope
+    if items.is_empty() {
+        return None;
+    }
+
     let envelope = Envelope {
         header: envelope_header,
         items,
@@ -126,7 +132,7 @@ fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
             Some(pos) => position + pos,
             None => {
                 warn!("Could not find item header line ending");
-                return items;
+                return vec![];
             }
         };
 
@@ -135,14 +141,14 @@ fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
             Ok(h) => h,
             Err(e) => {
                 warn!("Could not convert item header to String {0}", e);
-                return items;
+                return vec![];
             }
         };
         let header_json: Value = match serde_json::from_str(&header_str) {
             Ok(v) => v,
             Err(e) => {
                 warn!("Could not convert item header to JSON {0}", e);
-                return items;
+                return vec![];
             }
         };
 
@@ -263,5 +269,46 @@ mod tests {
         let envelope = parsed.expect("should be some");
         let bytes = envelope.to_bytes();
         assert_eq!(bytes.to_vec(), body, "body shape should be preserved");
+    }
+
+    #[test]
+    fn test_parse_body_invalid_multiline_item() {
+        // When items don't have a length, the item is supposed to be all on one line.
+        // This test covers non-compliant behavior as the item has no length and is multiline
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
+        body.extend_from_slice(b"{\"type\":\"event\"}\n");
+        body.extend_from_slice(b"{\"key\":\"value\", \"event_id\":\"replace\"}");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"feedback\"}\n");
+        body.extend_from_slice(b"{\"event_id\":\"replace\", \n");
+        body.extend_from_slice(b"\"contexts\":{\"feedback\":{}}}");
+
+        let parsed = parse(body.as_slice());
+        assert!(parsed.is_none());
+    }
+
+    #[test]
+    fn test_parse_body_binary_data() {
+        let mut body = Vec::new();
+
+        let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
+        let binary_header = format!(
+            "{{\"type\":\"attachment\",\"length\":{}}}\n",
+            binary_data.len()
+        );
+
+        body.extend_from_slice(b"{}\n");
+        body.extend_from_slice(binary_header.as_bytes());
+        body.extend_from_slice(&binary_data);
+        body.push(b'\n');
+
+        let parsed = parse(body.as_slice());
+        assert!(parsed.is_some());
+
+        let envelope = parsed.expect("should be some");
+        assert_eq!(envelope.items.len(), 1);
+        assert_eq!(envelope.items[0].header.get("type").unwrap(), "attachment");
+        assert_eq!(envelope.items[0].body.to_vec(), binary_data, "should preserve binary data");
     }
 }
