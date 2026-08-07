@@ -13,6 +13,7 @@ use crate::state::AppState;
 
 mod config;
 mod dsn;
+mod envelope;
 mod logging;
 mod metrics;
 mod request;
