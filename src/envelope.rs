@@ -2,25 +2,13 @@
 use hyper::body::Bytes;
 use serde_json::Value;
 use tracing::{debug, warn};
-/*
- *
-Envelope
-- header_json
-- header_bytes
-- body_bytes
-- vec<envelopeitem>
-
-EnvelopeItem
-- header_json
-- header_bytes
-- item_bytes
-*/
 
 /// We don't need to fully parse all envelopes.
 /// A partial parse of the body into the envelope
 /// header and items lets us apply sampling, event id rotation
 /// parsing 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct Envelope {
     /// The parsed json value of the header.
     pub header: Value,
@@ -31,6 +19,7 @@ pub struct Envelope {
 
 impl Envelope {
     /// Convert the envelope into Bytes that contains the envelope header, items and newlines.
+    #[allow(dead_code)]
     pub fn to_bytes(&self) -> Bytes {
         let mut bytes = vec![];
         let Ok(header_bytes) = serde_json::to_vec(&self.header) else {
@@ -51,6 +40,7 @@ impl Envelope {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub struct EnvelopeItem {
     /// The parsed json value of the header.
     pub header: Value,
@@ -76,6 +66,7 @@ impl EnvelopeItem {
 
 /// Extract an Envelope out of a byte stream
 /// Will return None when no items can be parsed, or the body has no newlines.
+#[allow(dead_code)]
 pub fn parse(body: &[u8]) -> Option<Envelope> {
     // Split the envelope header off if possible
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
