@@ -181,4 +181,23 @@ mod tests {
         assert_eq!(envelope.items[1].header.get("type").expect("should be there"), "event");
         assert_eq!(envelope.items[1].body.to_vec(), b"{\"event_id\":\"original-id\",\"message\":\"test\"}");
     }
+
+    #[test]
+    fn test_parse_envelope_items_invalid_header() {
+        let mut body = Vec::new();
+        // Envelope header
+        body.extend_from_slice(
+            br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"original-id"}"#,
+        );
+        body.push(b'\n');
+        body.extend_from_slice(b"lol-not-json\n");
+        body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
+
+        let res = parse(body.as_slice());
+        assert!(res.is_some());
+        let envelope = res.expect("should be some");
+        assert_eq!(envelope.header.get("dsn").expect("should be there"), "https://deadbeef@ingest.sentry.io/123");
+
+        assert_eq!(envelope.items.len(), 0);
+    }
 }
