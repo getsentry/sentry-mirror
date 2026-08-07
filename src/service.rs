@@ -13,6 +13,7 @@ use hyper_tls::HttpsConnector;
 
 use crate::dsn;
 use crate::request;
+use crate::envelope;
 use crate::state::AppState;
 
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
@@ -124,6 +125,9 @@ where
             Err(_) => return Ok(bad_request_response()),
         };
 
+    let envelope = envelope::parse(&body_bytes);
+    let is_envelope = is_envelope_request(&headers);
+
     // We'll race requests to the outbound DSN's and once all requests are complete
     // we use the body of the first response
     let mut responses = Vec::new();
@@ -144,16 +148,13 @@ where
             let request_builder =
                 request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
 
-            // Generate a new body for the request if modifying envelopes is enabled.
-            let body_out = if state.config.modify_envelope && is_envelope_request(&headers) {
-                // TODO this could use an enum to return different outcomes.
-                match request::modify_envelope(
-                    &body_bytes,
-                    &outbound.dsn,
-                    &outbound.categories,
-                    i > 0,
-                ) {
-                    Some(new_body) => new_body,
+            let new_body = if is_envelope && envelope.is_some() {
+                // TODO measure the impact of these additional allocations
+                let cloned = envelope.clone().unwrap();
+
+                // Generate a new body for the request if modifying envelopes is enabled.
+                match request::update_envelope(cloned, &outbound.dsn, &outbound.categories, i > 0) {
+                    Some(envelope) => envelope.to_bytes(),
                     None => {
                         // Skip sending requests for that didn't yield an envelope
                         // from filtering and mutations.
@@ -173,7 +174,7 @@ where
                 body_bytes.clone()
             };
 
-            let request = request_builder.body(Full::new(body_out));
+            let request = request_builder.body(Full::new(new_body));
             metrics::histogram!(
                 "handle_proxy.build_request.duration",
                 "outbound_host" => outbound_host.clone()

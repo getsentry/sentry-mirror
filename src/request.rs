@@ -14,6 +14,7 @@ use uuid::Uuid;
 
 use crate::config::ConfigData;
 use crate::dsn;
+use crate::envelope::Envelope;
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
 const NO_COPY_HEADERS: [&str; 3] = ["host", "x-forwarded-for", "content-length"];
@@ -76,121 +77,7 @@ pub fn make_outbound_request(
     builder
 }
 
-/// Build a new envelope body by filtering items and replacing identifiers.
-fn modify_envelope_body(
-    bytes: &[u8],
-    categories: &[String],
-    new_event_id: Option<String>,
-) -> Option<Vec<u8>> {
-    let mut output = Vec::with_capacity(bytes.len());
-    let mut position = 0;
-
-    // Iterate over item blocks in envelope
-    while position < bytes.len() {
-        // Find the end of the item header line (first \n)
-        let header_end = match bytes[position..].iter().position(|&x| x == b'\n') {
-            Some(pos) => position + pos,
-            None => {
-                warn!("Could not find item header line ending");
-                return None;
-            }
-        };
-
-        let header_slice = &bytes[position..header_end];
-        let header_str = match String::from_utf8(header_slice.to_vec()) {
-            Ok(h) => h,
-            Err(e) => {
-                warn!("Could not convert item header to String {0}", e);
-                return None;
-            }
-        };
-
-        let header_json: Value = match serde_json::from_str(&header_str) {
-            Ok(v) => v,
-            Err(e) => {
-                warn!("Could not convert item header to JSON {0}", e);
-                return None;
-            }
-        };
-
-        let event_type = header_json
-            .get("type")
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-
-        // Item header and payload are separated by \n
-        let data_start = header_end + 1;
-
-        // Read the item length from the header. Or infer the `length` based on newlines.
-        // When items don't have `length` defined, payloads are assumed to be on a
-        // single line.
-        // Ref: https://develop.sentry.dev/sdk/data-model/envelopes/#items
-        let length = match header_json.get("length").and_then(|v| v.as_u64()) {
-            Some(len) => len as usize,
-            None => {
-                if let Some(next_line) = bytes[data_start..].iter().position(|&x| x == b'\n') {
-                    next_line
-                } else {
-                    // Assume we are at the terminal item in the envelope.
-                    debug!(
-                        "Payload missing length, and no newline could be found for type={event_type}"
-                    );
-                    bytes.len() - data_start
-                }
-            }
-        };
-        // Position of where the current item ends.
-        let data_end = data_start + length;
-        if data_end > bytes.len() {
-            warn!("Data length {length} exceeds remaining bytes for block type {event_type}");
-            return None;
-        }
-
-        let item_chunk = if let Some(event_id) = new_event_id.clone() {
-            let data_chunk = &bytes[data_start..data_end];
-            if let Ok(mut payload) = serde_json::from_slice::<Value>(data_chunk) {
-                // If the item has an event_id replace it and match the uuid convention
-                // in the payload.
-                if let Some(old_id) = payload.get("event_id") {
-                    payload["event_id"] = if old_id.to_string().contains("-") {
-                        Value::String(event_id.clone())
-                    } else {
-                        Value::String(event_id.replace("-", "").clone())
-                    };
-                }
-
-                serde_json::to_vec(&payload).unwrap()
-            } else {
-                data_chunk.to_vec()
-            }
-        } else {
-            Vec::from(&bytes[data_start..data_end])
-        };
-
-        if categories.is_empty() || categories.contains(&event_type.to_string()) {
-            output.extend_from_slice(header_slice);
-            output.push(b'\n');
-            output.extend(item_chunk);
-        }
-
-        // Move to next block (skip past data and the trailing \n)
-        position = data_end + 1;
-
-        // If we're not at the end separate with newlines
-        if position < bytes.len() {
-            output.push(b'\n');
-        }
-    }
-
-    let trimmed = output.trim_ascii();
-    if trimmed.is_empty() {
-        return None;
-    }
-
-    Some(trimmed.to_vec())
-}
-
-/// Mutate the envelope body based on the outbound key configuration:
+/// Update the envelope body mutating it to incorporate the outbound_dsn and a new event id.
 ///
 /// Will do the following:
 ///
@@ -201,17 +88,12 @@ fn modify_envelope_body(
 ///   the eventid + project uniqueness.
 ///
 /// See the envelope specs https://develop.sentry.dev/sdk/envelopes/
-///
-/// This method returns None if modifications failed or the envelope should be skipped.
-pub fn modify_envelope(
-    body: &Bytes,
-    outbound: &dsn::Dsn,
+pub fn update_envelope(
+    mut envelope: Envelope,
+    outbound_dsn: &dsn::Dsn,
     categories: &[String],
     replace_item_id: bool,
-) -> Option<Bytes> {
-    // Split the envelope header off if possible
-    let mut body_chunks = body.splitn(2, |&x| x == b'\n');
-
+) -> Option<Envelope> {
     // If we need to replace the event_id generate a new v4 uuid
     let new_event_id = if replace_item_id {
         Some(Uuid::new_v4().to_string())
@@ -219,65 +101,49 @@ pub fn modify_envelope(
         None
     };
 
-    // Replace dsn and id values in envelope header
-    let envelope_header = {
-        let bytes = body_chunks.next()?;
-        modify_envelope_header(bytes, outbound, &new_event_id)?
-    };
-
-    // Filter and mutate envelope items if required.
-    let envelope_body_bytes = body_chunks.next()?;
-    let envelope_body = modify_envelope_body(envelope_body_bytes, categories, new_event_id)?;
-
-    // If all items were filtered out, we don't need to send the request.
-    if envelope_body.is_empty() {
-        return None;
+    // Replace the DSN and event_id if this is a multiplied envelope.
+    if envelope.header.get("dsn").is_some() {
+        envelope.header["dsn"] = Value::String(outbound_dsn.to_string());
     }
-
-    let mut output = Vec::with_capacity(body.len());
-    output.extend_from_slice(envelope_header.as_bytes());
-    output.push(b'\n');
-    output.extend_from_slice(&envelope_body);
-
-    Some(Bytes::from(output))
-}
-
-/// Modify an envelope header and replace keys based on the outbound DSN and event_id.
-fn modify_envelope_header(
-    envelope_header: &[u8],
-    outbound_dsn: &dsn::Dsn,
-    new_event_id: &Option<String>,
-) -> Option<String> {
-    // We don't want to copy the entire body to String as
-    // replays have blobs in them, and we only need the header.
-    let message_header = match String::from_utf8(envelope_header.to_vec()) {
-        Ok(h) => h,
-        Err(e) => {
-            warn!("Could not convert envelope header to String {0}", e);
-
-            return None;
-        }
-    };
-    let mut json_header: Value = match serde_json::from_str(&message_header) {
-        Ok(data) => data,
-        Err(_) => return None,
-    };
-    if json_header.get("dsn").is_some() {
-        json_header["dsn"] = Value::String(outbound_dsn.to_string());
-    }
-    if let Some(trace) = json_header.get("trace")
+    if let Some(trace) = envelope.header.get("trace")
         && trace.get("public_key").is_some()
     {
-        json_header["trace"]["public_key"] = Value::String(outbound_dsn.public_key.clone());
+        envelope.header["trace"]["public_key"] = Value::String(outbound_dsn.public_key.clone());
     }
-
-    if let Some(new_event_id) = new_event_id
-        && json_header.get("event_id").is_some()
+    if let Some(event_id) = new_event_id.clone()
+        && envelope.header.get("event_id").is_some()
     {
-        json_header["event_id"] = Value::String(new_event_id.clone());
+        envelope.header["event_id"] = Value::String(event_id);
     }
 
-    Some(json_header.to_string())
+    // Modify the envelope items (applying category filters and sample_rate soon)
+    envelope.items = envelope.items.into_iter()
+        .filter(|item| {
+            // Apply category filtering
+            let item_type = item.header.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            categories.is_empty() || categories.contains(&item_type.to_string())
+        })
+        // TODO implement sample rates
+        .map(|mut item| {
+            if new_event_id.is_none() {
+                return item
+            }
+            // Replace event_id in the event body to align with the envelope header.
+            if let Some(event_id) = new_event_id.clone() &&
+                let Ok(mut item_body) = serde_json::from_slice::<Value>(item.body.as_ref()) &&
+                let Some(old_id) = item_body.get("event_id")
+            {
+                item_body["event_id"] = if old_id.to_string().contains("-") {
+                    Value::String(event_id.clone())
+                } else {
+                    Value::String(event_id.replace("-", "").clone())
+                };
+                item.body = Bytes::from(serde_json::to_vec(&item_body).unwrap());
+            }
+            item
+        }).collect();
+
+    Some(envelope)
 }
 
 fn replace_public_key(target: &str, outbound: &dsn::Dsn) -> String {
@@ -415,6 +281,7 @@ mod tests {
     use http_body_util::Full;
 
     use super::*;
+    use crate::envelope;
 
     fn make_test_config() -> ConfigData {
         ConfigData::default()
@@ -664,30 +531,42 @@ mod tests {
     }
 
     #[test]
-    fn test_modify_envelope_empty_body() {
+    fn test_update_envelope_empty_body() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
-        let body = Bytes::from("");
-        let result = modify_envelope(&body, &outbound, &[], true);
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
+        body.extend_from_slice(b"{}\n");
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound ,&[], true);
 
-        assert!(result.is_none());
+        assert!(result.is_some());
+        let envelope = result.unwrap();
+        assert_eq!(envelope.items.len(), 1);
+        assert_eq!(envelope.items[0].body, vec![]);
     }
 
     #[test]
-    fn test_modify_envelope_missing_key() {
+    fn test_update_envelope_missing_key() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
-        let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#];
+        let lines = vec![
+            r#"{"key":"value"}"#, r#"{"second":"line"}"#, r#"{}"#
+        ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], true);
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound ,&[], true);
 
-        assert!(result.is_none());
+        assert!(result.is_some());
+        let updated = result.expect("should be some");
+        assert_eq!(updated.items.len(), 1);
+        assert_eq!(*updated.header.get("key").unwrap(), Value::String("value".to_string()));
     }
 
     #[test]
-    fn test_modify_envelope_only_first_line() {
+    fn test_update_envelope_replace_dsn_only_first_line() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -697,21 +576,23 @@ mod tests {
             r#"{"message":"neat", "dsn":"value"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], false);
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &[], false);
 
         assert!(result.is_some());
-        let new_body = result.unwrap();
+        let updated = result.expect("should be updated");
+        // Keys change order in the second line as we parse/serialize item headers
         let expected_lines = vec![
             r#"{"dsn":"https://outbound@o789.ingest.sentry.io/6789"}"#,
-            r#"{"second":"line", "dsn":"value", "length":33}"#,
+            r#"{"dsn":"value","length":33,"second":"line"}"#,
             r#"{"message":"neat", "dsn":"value"}"#,
         ];
         let expected = string_list_to_bytes(expected_lines);
-        assert_eq!(new_body, expected);
+        assert_eq!(updated.to_bytes().trim_ascii(), expected);
     }
 
     #[test]
-    fn test_modify_envelope_present() {
+    fn test_update_envelope_present() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -721,24 +602,25 @@ mod tests {
             r#"{"message":"something failed"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], false);
+        let envelope = envelope::parse(&body).expect("should parse");
+        let result = update_envelope(envelope, &outbound, &[], false);
 
         assert!(result.is_some());
 
-        let new_body = result.unwrap();
-        assert!(!new_body.is_empty());
+        let updated = result.unwrap();
+        assert!(!updated.items.is_empty());
 
         let expected_lines = vec![
             r#"{"dsn":"https://outbound@o789.ingest.sentry.io/6789","event_id":"5cb13bb8-eb7f-4a50-a8d8-9d309fd1049d"}"#,
-            r#"{"type":"event", "length":30}"#,
+            r#"{"length":30,"type":"event"}"#,
             r#"{"message":"something failed"}"#,
         ];
         let expected = string_list_to_bytes(expected_lines);
-        assert_eq!(new_body, expected);
+        assert_eq!(updated.to_bytes().trim_ascii(), expected);
     }
 
     #[test]
-    fn test_modify_envelope_trace_public_key() {
+    fn test_update_envelope_trace_public_key() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -748,17 +630,18 @@ mod tests {
             r#"{"message":"stuff"}"#,
         ];
         let body = string_list_to_bytes(lines);
-        let result = modify_envelope(&body, &outbound, &[], false);
+        let envelope = envelope::parse(&body).expect("should parse");
+        let result = update_envelope(envelope, &outbound, &[], false);
 
         assert!(result.is_some());
-        let new_body = result.unwrap();
+        let updated = result.unwrap();
         let expected_lines = vec![
             r#"{"dsn":"https://outbound@o789.ingest.sentry.io/6789","trace":{"public_key":"outbound"}}"#,
-            r#"{"second":"line", "dsn":"value", "length":19}"#,
+            r#"{"dsn":"value","length":19,"second":"line"}"#,
             r#"{"message":"stuff"}"#,
         ];
         let expected = string_list_to_bytes(expected_lines);
-        assert_eq!(new_body, expected);
+        assert_eq!(updated.to_bytes().trim_ascii(), expected);
     }
 
     #[test]
@@ -920,8 +803,13 @@ mod tests {
     }
 
     #[test]
-    fn test_modify_envelope_body_empty_categories() {
+    fn test_update_envelope_body_empty_categories() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+
         let mut body = Vec::new();
+        body.extend_from_slice(b"{\"dsn\":\"value\"}\n");
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
         body.push(b'\n');
@@ -929,19 +817,27 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let categories: Vec<String> = vec![];
-        let result = modify_envelope_body(&body, &categories, None);
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, false);
 
         assert!(result.is_some(), "Should return Some for valid input");
-        assert_eq!(
-            result.unwrap(),
-            body,
-            "Empty categories should return all bytes unchanged"
-        );
+        let updated = result.unwrap();
+        assert_eq!("https://outbound@o789.ingest.sentry.io/6789", updated.header.get("dsn").unwrap());
+
+        // No items filtered out.
+        assert_eq!(updated.items.len(), 2);
+        assert_eq!(updated.items[0].header.get("type").unwrap(), "attachment");
+        assert_eq!(updated.items[1].header.get("type").unwrap(), "event");
     }
 
     #[test]
-    fn test_modify_envelope_body_with_categories() {
+    fn test_update_envelope_body_with_categories() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+
         let mut body = Vec::new();
+        body.extend_from_slice(b"{\"dsn\":\"value\"}\n");
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
         body.push(b'\n');
@@ -949,23 +845,24 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let categories = vec!["event".to_string()];
-        let result = modify_envelope_body(&body, &categories, None);
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, false);
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
-        expected.extend_from_slice(b"test");
-
-        assert!(result.is_some(), "Should return Some for valid input");
-        assert_eq!(
-            result.unwrap(),
-            expected,
-            "Should include filtered block types"
-        );
+        assert!(result.is_some());
+        let updated = result.unwrap();
+        assert_eq!(updated.items.len(), 1, "items should be filtered");
+        assert_eq!(updated.items[0].header.get("type").unwrap(), "event");
+        assert_eq!(updated.items[0].body, Bytes::from(b"test".to_vec()));
     }
 
     #[test]
-    fn test_modify_envelope_body_with_categories_filtered_item() {
+    fn test_update_envelope_body_with_categories_filtered_item() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+
         let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
         body.extend_from_slice(b"hello");
         body.push(b'\n');
@@ -973,59 +870,71 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let categories = vec!["transaction".to_string()];
-        let result = modify_envelope_body(&body, &categories, None);
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, false);
+        assert!(result.is_some());
 
-        assert!(
-            result.is_none(),
-            "Should return none when there are no items"
-        );
+        let updated = result.unwrap();
+        assert_eq!(updated.items.len(), 0);
     }
 
     #[test]
-    fn test_modify_envelope_body_replace_id_no_dashes() {
+    fn test_update_envelope_body_replace_id_no_dashes() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+
         let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":41}\n");
         body.extend_from_slice(b"{\"event_id\":\"oldeventid\",\"other\":\"value\"}");
 
         let categories = vec![];
-        let result = modify_envelope_body(&body, &categories, Some("new-event-id".into()));
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, true);
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(b"{\"type\":\"event\",\"length\":41}\n");
-        expected.extend_from_slice(b"{\"event_id\":\"neweventid\",\"other\":\"value\"}");
+        assert!(result.is_some());
+        let updated = result.unwrap();
+        assert_eq!(updated.items.len(), 1);
 
-        assert!(result.is_some(), "Should return Some for valid input");
-        assert_eq!(
-            result.unwrap(),
-            expected,
-            "Should include filtered item types and match uuid dashes"
-        );
+        let item = &updated.items[0];
+        let body: Value = serde_json::from_slice(&item.body).unwrap();
+        let event_id = body.get("event_id").and_then(|v| v.as_str()).unwrap();
+        assert!(event_id != "oldeventid");
+        assert!(!event_id.contains("-"), "no dashes in new id as oldeventid had no dashes");
     }
 
     #[test]
-    fn test_modify_envelope_body_replace_id_preserve_dashes() {
+    fn test_update_envelope_body_replace_id_preserve_dashes() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+
         let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":43}\n");
         body.extend_from_slice(b"{\"event_id\":\"old-event-id\",\"other\":\"value\"}");
 
         let categories = vec![];
-        let result = modify_envelope_body(&body, &categories, Some("new-event-id".into()));
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, true);
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(b"{\"type\":\"event\",\"length\":43}\n");
-        expected.extend_from_slice(b"{\"event_id\":\"new-event-id\",\"other\":\"value\"}");
+        assert!(result.is_some());
+        let updated = result.unwrap();
+        assert_eq!(updated.items.len(), 1);
 
-        assert!(result.is_some(), "Should return Some for valid input");
-        assert_eq!(
-            result.unwrap(),
-            expected,
-            "Should include filtered block types and match uuid dash type"
-        );
+        let item = &updated.items[0];
+        let body: Value = serde_json::from_slice(&item.body).unwrap();
+        let event_id = body.get("event_id").and_then(|v| v.as_str()).unwrap();
+        assert!(event_id != "oldeventid");
+        assert!(event_id.contains("-"), "new event_id should contain dashes when old event_id had dashes");
     }
 
     #[test]
-    fn test_modify_envelope_body_multiline_data() {
-        let mut body = Vec::new();
+    fn test_update_envelope_body_multiline_data() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
 
         let attachment_data = "hello\nhello";
         let attachment_header = format!(
@@ -1033,6 +942,8 @@ mod tests {
             attachment_data.len()
         );
 
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
         body.extend_from_slice(attachment_header.as_bytes());
         body.extend_from_slice(attachment_data.as_bytes());
         body.push(b'\n');
@@ -1041,25 +952,27 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec!["attachment".to_string()];
-        let result = modify_envelope_body(&body, &categories, None);
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, false);
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(attachment_header.as_bytes());
-        expected.extend_from_slice(attachment_data.as_bytes());
+        assert!(result.is_some());
+        let updated = result.unwrap();
 
-        assert!(result.is_some(), "Should return Some for valid input");
-        assert_eq!(
-            result.unwrap(),
-            expected,
-            "Should correctly handle multiline data by using the length field from header"
-        );
+        assert_eq!(updated.items.len(), 1);
+        assert_eq!(updated.items[0].header.get("type").unwrap(), "attachment");
+        assert_eq!(updated.items[0].body, attachment_data.as_bytes());
     }
 
     #[test]
-    fn test_modify_envelope_body_item_header_no_length() {
+    fn test_update_envelope_body_item_header_no_length() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
+
         // When items don't have a length, we infer that the next line contains the entire payload.
         // Multi-line payloads *must* have length defined.
         let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{\"type\":\"event\"}\n");
         body.extend_from_slice(b"{\"key\":\"value\", \"event_id\":\"replace\"}");
         body.push(b'\n');
@@ -1067,43 +980,30 @@ mod tests {
         body.extend_from_slice(b"{\"event_id\":\"replace\", \"contexts\":{\"feedback\":{}}}");
 
         let categories: Vec<String> = vec![];
-        let result = modify_envelope_body(&body, &categories, Some("neweventid".into()));
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, true);
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(b"{\"type\":\"event\"}\n");
-        expected.extend_from_slice(b"{\"event_id\":\"neweventid\",\"key\":\"value\"}");
-        expected.push(b'\n');
-        expected.extend_from_slice(b"{\"type\":\"feedback\"}\n");
-        expected.extend_from_slice(b"{\"contexts\":{\"feedback\":{}},\"event_id\":\"neweventid\"}");
+        assert!(result.is_some());
+        let updated = result.unwrap();
 
-        assert!(result.is_some(), "Should return Some for valid input");
-        assert_eq!(
-            result.unwrap(),
-            expected,
-            "ID replacement should work with inferred lengths"
-        );
+        assert_eq!(updated.items.len(), 2);
+
+        let item = &updated.items[0];
+        let body: Value = serde_json::from_slice(&item.body).unwrap();
+        let event_id = body.get("event_id").and_then(|v| v.as_str()).unwrap();
+        assert!(event_id != "replace");
+
+        let item = &updated.items[1];
+        let body: Value = serde_json::from_slice(&item.body).unwrap();
+        let event_id = body.get("event_id").and_then(|v| v.as_str()).unwrap();
+        assert!(event_id != "replace", "event id replacement should work on inferred item lengths");
     }
 
     #[test]
-    fn test_modify_envelope_body_item_header_no_length_multiline_payload() {
-        // When items don't have a length, the item is supposed to be all on one line.
-        // This test covers non-compliant behavior as the item has no length and is multiline
-        let mut body = Vec::new();
-        body.extend_from_slice(b"{\"type\":\"event\"}\n");
-        body.extend_from_slice(b"{\"key\":\"value\", \"event_id\":\"replace\"}");
-        body.push(b'\n');
-        body.extend_from_slice(b"{\"type\":\"feedback\"}\n");
-        body.extend_from_slice(b"{\"event_id\":\"replace\", \n");
-        body.extend_from_slice(b"\"contexts\":{\"feedback\":{}}}");
-
-        let categories: Vec<String> = vec![];
-        let result = modify_envelope_body(&body, &categories, Some("neweventid".into()));
-        assert!(result.is_none(), "Should return None for invalid payloads");
-    }
-
-    #[test]
-    fn test_modify_envelope_body_binary_data() {
-        let mut body = Vec::new();
+    fn test_update_envelope_body_binary_data() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
 
         let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
         let binary_header = format!(
@@ -1111,31 +1011,27 @@ mod tests {
             binary_data.len()
         );
 
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
         body.extend_from_slice(binary_header.as_bytes());
         body.extend_from_slice(&binary_data);
         body.push(b'\n');
 
         let categories = vec!["attachment".to_string()];
-        let result = modify_envelope_body(&body, &categories, None);
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, true);
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(binary_header.as_bytes());
-        expected.extend_from_slice(&binary_data);
-
-        assert!(
-            result.is_some(),
-            "Should return Some even with non-UTF8 data containing newline in payload"
-        );
-        assert_eq!(
-            result.unwrap(),
-            expected,
-            "Should correctly handle binary data with embedded newline by using length field from header"
-        );
+        assert!(result.is_some());
+        let updated = result.unwrap();
+        assert_eq!(updated.items.len(), 1);
+        assert_eq!(updated.items[0].body.to_vec(), binary_data);
     }
 
     #[test]
-    fn test_modify_envelope_body_binary_data_replace_id() {
-        let mut body = Vec::new();
+    fn test_update_envelope_body_binary_data_replace_id() {
+        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap();
 
         let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
         let binary_header = format!(
@@ -1143,31 +1039,26 @@ mod tests {
             binary_data.len()
         );
 
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{}\n");
         body.extend_from_slice(binary_header.as_bytes());
         body.extend_from_slice(&binary_data);
         // Trailing newlines are removed
         body.push(b'\n');
 
         let categories = vec!["attachment".to_string()];
-        let result = modify_envelope_body(&body, &categories, Some("new-id".into()));
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, true);
 
-        let mut expected = Vec::new();
-        expected.extend_from_slice(binary_header.as_bytes());
-        expected.extend_from_slice(&binary_data);
+        assert!(result.is_some());
+        let updated = result.unwrap();
 
-        assert!(
-            result.is_some(),
-            "Should return Some even with non-UTF8 data containing newline in payload"
-        );
-        assert_eq!(
-            result.unwrap(),
-            expected,
-            "Should correctly handle binary data with embedded newline by using length field from header"
-        );
+        assert_eq!(updated.items.len(), 1);
+        assert_eq!(updated.items[0].body, &binary_data);
     }
 
     #[test]
-    fn test_modify_envelope_replace_item_id_with_categories() {
+    fn test_update_envelope_replace_item_id_with_categories() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -1187,35 +1078,23 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec!["event".to_string()];
-        let result = modify_envelope(&Bytes::from(body), &outbound, &categories, true);
-
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, true);
         assert!(result.is_some());
-        let new_body = result.unwrap();
-        let body_str = String::from_utf8(new_body.to_vec()).unwrap();
 
-        let mut body_lines = body_str.lines();
-        let envelope_header = body_lines.next().unwrap();
-        assert!(envelope_header.contains("event_id"));
-        assert!(!envelope_header.contains("original-id"));
+        let updated = result.unwrap();
 
-        let item_header = body_lines.next().unwrap();
-        assert!(
-            !item_header.contains("event_id"),
-            "event_id should not be added to item header"
-        );
+        // Attachment should be filtered out.
+        assert_eq!(updated.items.len(), 1);
+        assert_eq!(updated.items[0].header.get("type").unwrap(), "event");
+        assert_eq!(updated.items[0].body, Bytes::from(b"test".to_vec()));
 
-        assert!(
-            !body_str.contains("original-id"),
-            "Original event_id should be replaced"
-        );
-        assert!(
-            !body_str.contains("attachment"),
-            "Attachment should be filtered out"
-        );
+        // event_id in headers is updated
+        assert!(updated.header.get("event_id").unwrap() != "original-id");
     }
 
     #[test]
-    fn test_modify_envelope_replace_multiple_ids() {
+    fn test_update_envelope_replace_multiple_ids() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -1233,33 +1112,20 @@ mod tests {
         body.extend_from_slice(b"{\"event_id\":\"original-id\",\"message\":\"test\"}\n");
 
         let categories = vec![];
-        let result = modify_envelope(&Bytes::from(body), &outbound, &categories, true);
-
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, true);
         assert!(result.is_some());
-        let new_body = result.unwrap();
-        let body_str = String::from_utf8(new_body.to_vec()).unwrap();
+        let updated = result.unwrap();
+        assert_eq!(updated.items.len(), 2);
 
-        let mut body_lines = body_str.lines();
-        let envelope_header = body_lines.next().unwrap();
-        assert!(envelope_header.contains("event_id"));
-        assert!(!envelope_header.contains("original-id"));
+        let feedback_body: Value = serde_json::from_slice(&updated.items[0].body).unwrap();
+        let event_id = feedback_body.get("event_id").and_then(|v| v.as_str()).unwrap();
+        assert!(event_id != "original-id", "event_id should change");
 
-        let feedback_header = body_lines.next().unwrap();
-        assert!(feedback_header.contains("type\":\"feedback"));
 
-        // feedback Should be updated with the new eventid
-        let feedback_body = body_lines.next().unwrap();
-        assert!(feedback_body.contains("contexts"));
-        assert!(feedback_body.contains("event_id"));
-        assert!(!feedback_body.contains("original-id"));
-
-        // event should have new eventid too
-        let event_header = body_lines.next().unwrap();
-        assert!(event_header.contains("type\":\"event"));
-
-        let event_body = body_lines.next().unwrap();
-        assert!(event_body.contains("event_id"));
-        assert!(!event_body.contains("original-id"));
+        let event_body: Value = serde_json::from_slice(&updated.items[1].body).unwrap();
+        let event_id = event_body.get("event_id").and_then(|v| v.as_str()).unwrap();
+        assert!(event_id != "original-id", "event_id should change");
     }
 
     #[test]
@@ -1283,23 +1149,16 @@ mod tests {
         body.push(b'\n');
 
         let categories = vec![];
-        let result = modify_envelope(&Bytes::from(body), &outbound, &categories, true);
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(envelope, &outbound, &categories, true);
 
         assert!(result.is_some());
-        let new_body = result.unwrap();
-        let body_str = String::from_utf8(new_body.to_vec()).unwrap();
-
-        let item_header = body_str.lines().next().unwrap();
-        assert!(item_header.contains("event_id"));
-        assert!(!item_header.contains("original-id"));
-
+        let updated = result.unwrap();
+        assert_eq!(updated.items.len(), 2);
         assert!(
-            !body_str.contains("original-id"),
-            "Original event_id should be replaced"
-        );
-        assert!(
-            body_str.contains("attachment"),
-            "Attachment should be included"
+            *updated.header.get("event_id").unwrap()
+            != Value::String("original-id".to_string()),
+            "event id should be changed"
         );
     }
 }
