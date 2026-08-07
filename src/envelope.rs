@@ -22,14 +22,56 @@ EnvelopeItem
 /// parsing 
 #[derive(Debug, Clone)]
 pub struct Envelope {
+    /// The parsed json value of the header.
     pub header: Value,
+
+    /// Collection of items in the envelope.
     pub items: Vec<EnvelopeItem>,
+}
+
+impl Envelope {
+    /// Convert the envelope into Bytes that contains the envelope header, items and newlines.
+    pub fn to_bytes(&self) -> Bytes {
+        let mut bytes = vec![];
+        let Ok(header_bytes) = serde_json::to_vec(&self.header) else {
+            return Bytes::new();
+        };
+        bytes.extend(header_bytes);
+        bytes.extend(b"\n");
+
+        for item in self.items.iter() {
+            let item_bytes = item.to_bytes();
+            bytes.extend_from_slice(&item_bytes);
+            bytes.extend(b"\n");
+        }
+        bytes.trim_ascii();
+
+        Bytes::from(bytes)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct EnvelopeItem {
+    /// The parsed json value of the header.
     pub header: Value,
+
+    /// Bytes of the envelope item.
     pub body: Bytes,
+}
+
+impl EnvelopeItem {
+    /// Convert the item into bytes that can be added to an envelope bytes.
+    pub fn to_bytes(&self) -> Bytes {
+        let mut bytes = vec![];
+        let Ok(header_bytes) = serde_json::to_vec(&self.header) else {
+            return Bytes::new();
+        };
+        bytes.extend(header_bytes);
+        bytes.extend(b"\n");
+        bytes.extend(self.body.to_vec());
+
+        Bytes::from(bytes)
+    }
 }
 
 /// Extract an Envelope out of a byte stream
@@ -199,5 +241,27 @@ mod tests {
         assert_eq!(envelope.header.get("dsn").expect("should be there"), "https://deadbeef@ingest.sentry.io/123");
 
         assert_eq!(envelope.items.len(), 0);
+    }
+
+    #[test]
+    fn test_parse_and_to_bytes() {
+        let mut body = Vec::new();
+        // Envelope header
+        body.extend_from_slice(
+            br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"original-id"}"#,
+        );
+        body.push(b'\n');
+        // Feedback item
+        body.extend_from_slice(b"{\"length\":40,\"type\":\"feedback\"}\n");
+        body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
+        // Event item
+        body.extend_from_slice(b"{\"length\":43,\"type\":\"event\"}\n");
+        body.extend_from_slice(b"{\"event_id\":\"original-id\",\"message\":\"test\"}\n");
+
+        let parsed = parse(body.as_slice());
+        assert!(parsed.is_some());
+        let envelope = parsed.expect("should be some");
+        let bytes = envelope.to_bytes();
+        assert_eq!(bytes.to_vec(), body, "body shape should be preserved");
     }
 }
