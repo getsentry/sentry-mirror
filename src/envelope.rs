@@ -33,7 +33,6 @@ impl Envelope {
             bytes.extend_from_slice(&item_bytes);
             bytes.extend(b"\n");
         }
-        bytes.trim_ascii();
 
         Bytes::from(bytes)
     }
@@ -187,10 +186,7 @@ mod tests {
     fn test_parse_envelope_empty() {
         let body = b"";
         let res = parse(body);
-        assert!(res.is_some());
-        let envelope = res.expect("should be some");
-        assert_eq!(envelope.header, Value::Null);
-        assert_eq!(envelope.items.len(), 0);
+        assert!(res.is_none());
     }
 
     #[test]
@@ -222,6 +218,22 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_envelope_item_length_overflow() {
+        let mut body = Vec::new();
+        // Envelope header
+        body.extend_from_slice(
+            br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"original-id"}"#,
+        );
+        body.push(b'\n');
+        // Feedback item with overflow length attribute
+        body.extend_from_slice(b"{\"type\":\"feedback\",\"length\":400000}\n");
+        body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
+
+        let res = parse(body.as_slice());
+        assert!(res.is_none());
+    }
+
+    #[test]
     fn test_parse_envelope_items_invalid_header() {
         let mut body = Vec::new();
         // Envelope header
@@ -229,15 +241,12 @@ mod tests {
             br#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"original-id"}"#,
         );
         body.push(b'\n');
+        // Item header is not json
         body.extend_from_slice(b"lol-not-json\n");
         body.extend_from_slice(b"{\"event_id\":\"original-id\",\"contexts\":{}}\n");
 
         let res = parse(body.as_slice());
-        assert!(res.is_some());
-        let envelope = res.expect("should be some");
-        assert_eq!(envelope.header.get("dsn").expect("should be there"), "https://deadbeef@ingest.sentry.io/123");
-
-        assert_eq!(envelope.items.len(), 0);
+        assert!(res.is_none());
     }
 
     #[test]
