@@ -15,7 +15,7 @@ fn emit_version() {
 
     let release_name = format!("{package_name}@{package_version}+{git_commit_sha}");
     fs::write("./VERSION", &release_name).expect("Unable to write version");
-    println!("cargo:rustc-env=SENTRY_MIRROR_VERSION={}", &release_name);
+    println!("cargo:rustc-env=SENTRY_MIRROR_VERSION={}", release_name);
 }
 
 fn main() {

@@ -220,9 +220,9 @@ pub fn modify_envelope(
     };
 
     // Replace dsn and id values in envelope header
-    let envelope_header = match body_chunks.next() {
-        Some(bytes) => modify_envelope_header(bytes, outbound, &new_event_id)?,
-        None => return None,
+    let envelope_header = {
+        let bytes = body_chunks.next()?;
+        modify_envelope_header(bytes, outbound, &new_event_id)?
     };
 
     // Filter and mutate envelope items if required.
