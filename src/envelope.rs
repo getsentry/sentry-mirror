@@ -70,9 +70,9 @@ pub fn parse(body: &[u8]) -> Option<Envelope> {
     let mut body_chunks = body.splitn(2, |&x| x == b'\n');
 
     // Replace dsn and id values in envelope header
-    let envelope_header = match body_chunks.next() {
-        Some(bytes) => parse_envelope_header(bytes),
-        None => return None,
+    let envelope_header = {
+        let bytes = body_chunks.next()?;
+        parse_envelope_header(bytes)
     };
     let items = parse_envelope_items(body_chunks.next());
     // If we failed to parse any items, we don't want a partial envelope

@@ -165,7 +165,7 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
 
 pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
     let mut out = String::new();
-    for (_, keyring) in keymap.iter() {
+    for keyring in keymap.values() {
         out.push_str(format!("Inbound: {}\n", keyring.inbound).as_ref());
         out.push_str("Outbound:\n");
         for outbound in keyring.outbound.iter() {
