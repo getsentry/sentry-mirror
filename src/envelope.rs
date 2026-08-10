@@ -88,9 +88,9 @@ pub fn parse(body: &[u8]) -> Option<Envelope> {
     Some(envelope)
 }
 
+/// Extract and parse the envelope header
 fn parse_envelope_header(header: &[u8]) -> Value {
-    // We don't want to copy the entire body to String as
-    // replays have blobs in them, and we only need the header.
+    // envelope headers must be parsable as a string
     let message_header = match String::from_utf8(header.to_vec()) {
         Ok(h) => h,
         Err(e) => {
@@ -99,12 +99,14 @@ fn parse_envelope_header(header: &[u8]) -> Value {
             return Value::Null;
         }
     };
+    // envelope headers must be json
     match serde_json::from_str(&message_header) {
         Ok(data) => data,
         Err(_) => Value::Null,
     }
 }
 
+/// Extract all the envelope items out of a bytes/none
 fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
     let body = match body {
         Some(body) => body,
@@ -114,7 +116,7 @@ fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
     let mut position = 0;
     let mut items: Vec<EnvelopeItem> = vec![];
 
-    // Iterate over item blocks in envelope
+    // Parse items until we get to the end of the bytestream
     while position < body.len() {
         // Find the end of the item header line (first \n)
         let header_end = match body[position..].iter().position(|&x| x == b'\n') {
@@ -124,7 +126,7 @@ fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
                 return vec![];
             }
         };
-
+        // Item headers must be string + json
         let header_slice = &body[position..header_end];
         let header_str = match String::from_utf8(header_slice.to_vec()) {
             Ok(h) => h,
@@ -160,7 +162,7 @@ fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
                 }
             }
         };
-        // Position of where the current item ends.
+        // Calculate the end of the envelope item, and handle int overflows
         let Some(data_end) = data_start.checked_add(length) else {
             warn!("Data length {length} overflows u64");
             return vec![];
