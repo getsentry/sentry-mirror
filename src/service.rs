@@ -225,7 +225,10 @@ where
                 found_body = true;
             }
         } else {
-            metrics::counter!("handle_proxy.outbound_request.failed").increment(1);
+            metrics::counter!(
+                "handle_proxy.outbound_request.failed",
+                "outbound_host" => resp_hostname.clone()
+            ).increment(1);
             warn!("Could not make request: {0:?}", response_res.err());
         }
     }
