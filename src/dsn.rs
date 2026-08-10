@@ -5,9 +5,11 @@ use std::str::FromStr;
 
 use hyper::{HeaderMap, Uri};
 use regex::Regex;
+use tracing::{error, warn};
 use url::Url;
 
 use crate::config::{ConfigData, OutboundConfig};
+use crate::sampling::{self, SampleRates};
 
 /// DSN components parsed from a DSN string
 #[derive(Debug, Clone, PartialEq)]
@@ -108,12 +110,20 @@ pub struct OutboundEntry {
     pub dsn: Dsn,
     pub categories: Vec<String>,
     pub multiplier: usize,
+
+    /// Sampling rates applied to traffic sent to this DSN.
+    /// `None` when the DSN is not sampled.
+    pub sample_rate: Option<SampleRates>,
 }
 
 #[derive(Debug, PartialEq)]
 pub struct DsnKeyRing {
     pub inbound: Dsn,
     pub outbound: Vec<OutboundEntry>,
+}
+
+fn parse_outbound(dsn: &str) -> Dsn {
+    dsn.parse::<Dsn>().expect("Invalid outbound DSN")
 }
 
 /// Convert a list of Config data keys into Dsn's that we can use
@@ -130,24 +140,40 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
             .outbound
             .iter()
             .filter_map(|item| match item {
-                OutboundConfig::Dsn(opt) => {
-                    opt.as_ref().map(|dsn_str| (dsn_str.clone(), vec![], 1))
-                }
+                OutboundConfig::Dsn(opt) => opt.as_ref().map(|dsn_str| OutboundEntry {
+                    dsn: parse_outbound(dsn_str),
+                    categories: vec![],
+                    multiplier: 1,
+                    sample_rate: None,
+                }),
                 OutboundConfig::Detailed {
                     dsn,
                     categories,
                     multiplier,
+                    sample_rate,
                 } => {
-                    let categories = categories.clone().unwrap_or(vec![]);
-                    Some((dsn.clone(), categories, *multiplier))
-                }
-            })
-            .map(|(outbound_str, categories, multiplier)| {
-                let dsn = outbound_str.parse::<Dsn>().expect("Invalid outbound DSN");
-                OutboundEntry {
-                    dsn,
-                    categories,
-                    multiplier,
+                    let mut problems = Vec::new();
+                    let sample_rate = sample_rate
+                        .as_ref()
+                        .map(|config| sampling::normalize(config, &mut problems));
+                    for problem in problems {
+                        warn!("Outbound DSN {dsn}: {problem}");
+                    }
+                    let multiplier = if sample_rate.is_some() && *multiplier > 1 {
+                        error!(
+                            "Outbound DSN {dsn}: multiplier cannot be combined with sample_rate, ignoring multiplier {multiplier}"
+                        );
+                        1
+                    } else {
+                        *multiplier
+                    };
+
+                    Some(OutboundEntry {
+                        dsn: parse_outbound(dsn),
+                        categories: categories.clone().unwrap_or_default(),
+                        multiplier,
+                        sample_rate,
+                    })
                 }
             })
             .collect::<Vec<OutboundEntry>>();
@@ -172,6 +198,9 @@ pub fn format_key_map(keymap: &HashMap<String, DsnKeyRing>) -> String {
             out.push_str(format!("- {}\n", outbound.dsn).as_ref());
             if !outbound.categories.is_empty() {
                 out.push_str(format!("  categories: {:?}\n", outbound.categories).as_ref());
+            }
+            if let Some(sample_rate) = &outbound.sample_rate {
+                out.push_str(format!("  sample_rate: {sample_rate}\n").as_ref());
             }
             if outbound.multiplier > 1 {
                 out.push_str(format!("  multiplier: {}\n", outbound.multiplier).as_ref());
@@ -216,8 +245,9 @@ pub fn from_request(uri: &Uri, headers: &HeaderMap) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{ConfigData, ConfigKeyPair, OutboundConfig};
+    use crate::config::{ConfigData, ConfigKeyPair, OutboundConfig, SampleRateConfig};
     use crate::logging::LogFormat;
+    use std::collections::BTreeMap;
 
     fn make_test_config() -> ConfigData {
         ConfigData {
@@ -362,11 +392,13 @@ mod tests {
                     dsn: "https://ghijkl@sentry.io/567".to_string(),
                     categories: Some(vec!["event".to_string(), "transaction".to_string()]),
                     multiplier: 1,
+                    sample_rate: None,
                 },
                 OutboundConfig::Detailed {
                     dsn: "https://mnopq@sentry.io/890".to_string(),
                     categories: Some(vec!["replay".to_string()]),
                     multiplier: 1,
+                    sample_rate: None,
                 },
             ],
         }];
@@ -392,6 +424,7 @@ mod tests {
                     dsn: "https://key333@sentry.io/3333".to_string(),
                     categories: Some(vec!["error".to_string(), "span".to_string()]),
                     multiplier: 1,
+                    sample_rate: None,
                 },
             ],
         }];
@@ -407,6 +440,88 @@ mod tests {
         assert_eq!(key_value.outbound[0].categories.len(), 0);
         assert_eq!(key_value.outbound[1].dsn.public_key, "key333");
         assert_eq!(key_value.outbound[1].categories, vec!["error", "span"]);
+    }
+
+    /// Build a keymap with a single detailed outbound DSN.
+    fn key_map_with(multiplier: usize, sample_rate: Option<SampleRateConfig>) -> DsnKeyRing {
+        let mut config = make_test_config();
+        config.keys = vec![ConfigKeyPair {
+            inbound: "https://abcdef@sentry.io/1234".to_string(),
+            outbound: vec![OutboundConfig::Detailed {
+                dsn: "https://ghijkl@sentry.io/567".to_string(),
+                categories: None,
+                multiplier,
+                sample_rate,
+            }],
+        }];
+        let mut keymap = make_key_map(&config);
+
+        keymap.remove("abcdef").expect("Should have a value")
+    }
+
+    #[test]
+    fn make_key_map_with_sample_rate_float() {
+        let keyring = key_map_with(1, Some(SampleRateConfig::Uniform(0.5)));
+        let rates = keyring.outbound[0]
+            .sample_rate
+            .as_ref()
+            .expect("should have rates");
+
+        assert_eq!(rates.rate_for("error"), 0.5);
+        assert_eq!(rates.rate_for("span"), 0.5);
+    }
+
+    #[test]
+    fn make_key_map_with_sample_rate_map() {
+        let rates = BTreeMap::from([("span".to_string(), 0.05)]);
+        let keyring = key_map_with(1, Some(SampleRateConfig::PerCategory(rates)));
+        let rates = keyring.outbound[0]
+            .sample_rate
+            .as_ref()
+            .expect("should have rates");
+
+        assert_eq!(rates.rate_for("span"), 0.05);
+        assert_eq!(
+            rates.rate_for("error"),
+            1.0,
+            "unlisted categories are not sampled"
+        );
+    }
+
+    #[test]
+    fn make_key_map_no_sample_rate() {
+        let keyring = key_map_with(1, None);
+
+        assert_eq!(keyring.outbound[0].sample_rate, None);
+    }
+
+    #[test]
+    fn make_key_map_clamps_out_of_range_sample_rate() {
+        let keyring = key_map_with(1, Some(SampleRateConfig::Uniform(2.0)));
+        let rates = keyring.outbound[0]
+            .sample_rate
+            .as_ref()
+            .expect("should have rates");
+
+        assert_eq!(rates.rate_for("error"), 1.0);
+    }
+
+    #[test]
+    fn make_key_map_sample_rate_and_multiplier_conflict() {
+        let keyring = key_map_with(4, Some(SampleRateConfig::Uniform(0.5)));
+
+        assert_eq!(
+            keyring.outbound[0].multiplier, 1,
+            "multiplier should be ignored when sampling"
+        );
+        assert!(keyring.outbound[0].sample_rate.is_some());
+    }
+
+    #[test]
+    fn make_key_map_multiplier_without_sample_rate_preserved() {
+        let keyring = key_map_with(4, None);
+
+        assert_eq!(keyring.outbound[0].multiplier, 4);
     }
 
     #[test]
@@ -510,5 +625,38 @@ mod tests {
         assert!(output.contains("Outbound:\n"));
         assert!(output.contains("- https://ghijkl@sentry.io/567\n"));
         assert!(output.contains("- https://mnopq@sentry.io/890\n"));
+    }
+
+    #[test]
+    fn test_format_key_map_with_sample_rate() {
+        let mut config = make_test_config();
+        config.keys = vec![ConfigKeyPair {
+            inbound: "https://abcdef@sentry.io/1234".to_string(),
+            outbound: vec![
+                OutboundConfig::Detailed {
+                    dsn: "https://ghijkl@sentry.io/567".to_string(),
+                    categories: None,
+                    multiplier: 1,
+                    sample_rate: Some(SampleRateConfig::Uniform(0.5)),
+                },
+                OutboundConfig::Detailed {
+                    dsn: "https://mnopq@sentry.io/890".to_string(),
+                    categories: None,
+                    multiplier: 1,
+                    sample_rate: Some(SampleRateConfig::PerCategory(BTreeMap::from([(
+                        "span".to_string(),
+                        0.05,
+                    )]))),
+                },
+            ],
+        }];
+        let key_map = make_key_map(&config);
+        let output = format_key_map(&key_map);
+
+        assert!(output.contains("  sample_rate: 0.5\n"), "{output}");
+        assert!(
+            output.contains("  sample_rate: {span: 0.05} (default 1)\n"),
+            "{output}"
+        );
     }
 }
