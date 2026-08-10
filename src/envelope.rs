@@ -1,4 +1,3 @@
-
 use hyper::body::Bytes;
 use serde_json::Value;
 use tracing::{debug, warn};
@@ -6,7 +5,7 @@ use tracing::{debug, warn};
 /// We don't need to fully parse all envelopes.
 /// A partial parse of the body into the envelope
 /// header and items lets us apply sampling, event id rotation
-/// parsing 
+/// parsing
 #[derive(Debug, Clone)]
 #[allow(dead_code)]
 pub struct Envelope {
@@ -175,7 +174,10 @@ fn parse_envelope_items(body: Option<&[u8]>) -> Vec<EnvelopeItem> {
         // Move to next block (skip past data and the trailing \n)
         position = data_end + 1;
 
-        let item = EnvelopeItem {header: header_json, body: item_bytes};
+        let item = EnvelopeItem {
+            header: header_json,
+            body: item_bytes,
+        };
         items.push(item);
     }
     items
@@ -210,14 +212,35 @@ mod tests {
         let res = parse(body.as_slice());
         assert!(res.is_some());
         let envelope = res.expect("should be some");
-        assert_eq!(envelope.header.get("dsn").expect("should be there"), "https://deadbeef@ingest.sentry.io/123");
+        assert_eq!(
+            envelope.header.get("dsn").expect("should be there"),
+            "https://deadbeef@ingest.sentry.io/123"
+        );
 
         assert_eq!(envelope.items.len(), 2);
-        assert_eq!(envelope.items[0].header.get("type").expect("should be there"), "feedback");
-        assert_eq!(envelope.items[0].body.to_vec(), b"{\"event_id\":\"original-id\",\"contexts\":{}}");
+        assert_eq!(
+            envelope.items[0]
+                .header
+                .get("type")
+                .expect("should be there"),
+            "feedback"
+        );
+        assert_eq!(
+            envelope.items[0].body.to_vec(),
+            b"{\"event_id\":\"original-id\",\"contexts\":{}}"
+        );
 
-        assert_eq!(envelope.items[1].header.get("type").expect("should be there"), "event");
-        assert_eq!(envelope.items[1].body.to_vec(), b"{\"event_id\":\"original-id\",\"message\":\"test\"}");
+        assert_eq!(
+            envelope.items[1]
+                .header
+                .get("type")
+                .expect("should be there"),
+            "event"
+        );
+        assert_eq!(
+            envelope.items[1].body.to_vec(),
+            b"{\"event_id\":\"original-id\",\"message\":\"test\"}"
+        );
     }
 
     #[test]
@@ -334,6 +357,10 @@ mod tests {
         let envelope = parsed.expect("should be some");
         assert_eq!(envelope.items.len(), 1);
         assert_eq!(envelope.items[0].header.get("type").unwrap(), "attachment");
-        assert_eq!(envelope.items[0].body.to_vec(), binary_data, "should preserve binary data");
+        assert_eq!(
+            envelope.items[0].body.to_vec(),
+            binary_data,
+            "should preserve binary data"
+        );
     }
 }
