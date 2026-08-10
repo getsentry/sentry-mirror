@@ -331,7 +331,6 @@ mod tests {
                     ))],
                 },
             ],
-            modify_envelope: true,
         }
     }
 
