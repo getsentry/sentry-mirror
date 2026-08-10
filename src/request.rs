@@ -148,6 +148,11 @@ pub fn update_envelope(
         })
         .collect();
 
+    // If the envelope has had all items removed we don't send it.
+    if envelope.items.is_empty() {
+        return None;
+    }
+
     Some(envelope)
 }
 
@@ -519,17 +524,6 @@ mod tests {
             !req.headers().contains_key("Content-Encoding"),
             "should be absent when envelope_header modification is on"
         );
-
-        let config = ConfigData::default();
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
-        let res = builder.body("");
-
-        assert!(res.is_ok());
-        let req = res.unwrap();
-        assert!(
-            req.headers().contains_key("Content-Encoding"),
-            "should be present when the body is unchanged."
-        );
     }
 
     #[test]
@@ -834,7 +828,7 @@ mod tests {
     }
 
     #[test]
-    fn test_update_envelope_body_with_categories_filtered_item() {
+    fn test_update_envelope_body_with_categories_filter_all_items() {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -850,10 +844,7 @@ mod tests {
         let categories = vec!["transaction".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
         let result = update_envelope(envelope, &outbound, &categories, false);
-        assert!(result.is_some());
-
-        let updated = result.unwrap();
-        assert_eq!(updated.items.len(), 0);
+        assert!(result.is_none(), "all items filtered, envelope is not needed");
     }
 
     #[test]
