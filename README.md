@@ -45,7 +45,7 @@ matching envelope items *n* times. Each copy will have a unique `event_id`
 assigned to it. Multipliers are useful when you need to amplify writes from an
 application to increase load on a sentry instance.
 
-Outbound DSN keys can a `sample_rate` defined:
+Outbound DSN keys can have a `sample_rate` defined:
 
 ```yaml
 ip: 0.0.0.0
@@ -72,8 +72,14 @@ rate, or a simple float. When `sample_rate` is defined as a float, it applies to
 between `0 - 1.0` inclusive. Out of bounds values emit warnings during startup
 and the values are clamped to the closest boundary.
 
-:warning: Combining `multiplier` and `sample_rate` is a configuration error,
-that should cause the mirror to log an error and ignore the `multiplier` value.
+Sampling decisions are made once per envelope, using the category of the first
+item that is not an `attachment`. An envelope is either forwarded whole or
+dropped whole, so attachments are never separated from the event they belong to.
+Requests that are not envelopes, such as minidumps, use the rate that applies to
+all categories, and are not sampled when only per-category rates are configured.
+
+:warning: Combining `multiplier` and `sample_rate` is a configuration error.
+The mirror logs an error during startup and ignores the `multiplier` value.
 
 ## Request rewriting
 
@@ -82,8 +88,8 @@ When events are mirrored to outbound DSNs the following modifications may be mad
 1. `sentry_key` component of `Authorization` and `X-Sentry-Auth` headers will be replaced.
 2. `dsn` in envelope headers will be replaced.
 3. `trace.public_key` in envelope headers will be replaced.
-3. `trace.sample_rate` is recalculated if `sample_rate` is defined on the DSN configuration.
-4. Content-Length, Content-Encoding, Host, X-Forwarded-For headers will be removed.
+4. `trace.sample_rate` is recalculated if `sample_rate` is defined on the DSN configuration.
+5. Content-Length, Content-Encoding, Host, X-Forwarded-For headers will be removed.
 
 sentry-mirror will send outbound requests concurrently and respond with the response 
 body of the first outbound key.
