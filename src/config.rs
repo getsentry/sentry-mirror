@@ -10,6 +10,16 @@ use std::fs;
 
 use crate::logging::LogFormat;
 
+/// The sampling rate applied to an outbound DSN. Either a single rate used for
+/// all categories, or a mapping of category to rate. Categories that are absent
+/// from the mapping are not sampled.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum SampleRateConfig {
+    Uniform(f64),
+    PerCategory(BTreeMap<String, f64>),
+}
+
 /// Configuration data for Outbound destination DSNs.
 /// Each outbound DSN can optionally include a list of
 /// `categories` that the DSN is interested in.Envelope
@@ -26,6 +36,8 @@ pub enum OutboundConfig {
         categories: Option<Vec<String>>,
         #[serde(default = "default_multiplier")]
         multiplier: usize,
+        #[serde(default)]
+        sample_rate: Option<SampleRateConfig>,
     },
 }
 
@@ -155,12 +167,17 @@ mod tests {
                 dsn,
                 categories,
                 multiplier,
+                sample_rate,
             } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(categories, Some(vec!["event".to_string()]));
                 assert_eq!(
                     multiplier, 1,
                     "multiply should default to 1 when not specified"
+                );
+                assert_eq!(
+                    sample_rate, None,
+                    "sample_rate should be None when not specified"
                 );
             }
             _ => panic!("Expected Detailed variant"),
@@ -178,6 +195,7 @@ mod tests {
                 dsn,
                 categories: _,
                 multiplier,
+                sample_rate: _,
             } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(
@@ -200,6 +218,7 @@ mod tests {
                 dsn,
                 categories,
                 multiplier,
+                sample_rate,
             } => {
                 assert_eq!(dsn, "https://key@sentry.io/123");
                 assert_eq!(
@@ -207,8 +226,94 @@ mod tests {
                     "categories should be None when not specified"
                 );
                 assert_eq!(multiplier, 1, "multiply should default to 1");
+                assert_eq!(sample_rate, None, "sample_rate should default to None");
             }
             _ => panic!("Expected Detailed variant"),
         }
+    }
+
+    fn get_sample_rate(json: &str) -> Option<SampleRateConfig> {
+        let config: OutboundConfig = serde_json::from_str(json).unwrap();
+        match config {
+            OutboundConfig::Detailed { sample_rate, .. } => sample_rate,
+            _ => panic!("Expected Detailed variant"),
+        }
+    }
+
+    #[test]
+    fn test_outbound_config_sample_rate_float() {
+        let sample_rate =
+            get_sample_rate(r#"{"dsn": "https://key@sentry.io/123", "sample_rate": 0.25}"#);
+
+        assert_eq!(sample_rate, Some(SampleRateConfig::Uniform(0.25)));
+    }
+
+    #[test]
+    fn test_outbound_config_sample_rate_integer() {
+        // Integers should be accepted as rates, not just floats.
+        let sample_rate =
+            get_sample_rate(r#"{"dsn": "https://key@sentry.io/123", "sample_rate": 1}"#);
+
+        assert_eq!(sample_rate, Some(SampleRateConfig::Uniform(1.0)));
+    }
+
+    #[test]
+    fn test_outbound_config_sample_rate_map() {
+        let sample_rate = get_sample_rate(
+            r#"{"dsn": "https://key@sentry.io/123", "sample_rate": {"span": 0.05, "error": 0.5}}"#,
+        );
+
+        let expected = BTreeMap::from([("span".to_string(), 0.05), ("error".to_string(), 0.5)]);
+        assert_eq!(sample_rate, Some(SampleRateConfig::PerCategory(expected)));
+    }
+
+    #[test]
+    // Jail closures return figment::Error, which is large by nature.
+    #[allow(clippy::result_large_err)]
+    fn test_from_args_sample_rate_yaml() {
+        // Exercise the figment/yaml deserializer used in production, rather
+        // than serde_json which takes a different code path.
+        figment::Jail::expect_with(|jail| {
+            jail.create_file(
+                "config.yaml",
+                r#"
+keys:
+  - inbound: https://inbound@sentry.io/1234
+    outbound:
+      - https://plain@sentry.io/1
+      - dsn: https://uniform@sentry.io/2
+        sample_rate: 0.5
+      - dsn: https://mapped@sentry.io/3
+        sample_rate:
+          span: 0.05
+"#,
+            )?;
+            let args = Args {
+                config: "config.yaml".to_string(),
+                verbose: false,
+            };
+            let config = from_args(&args).expect("config should parse");
+            let outbound = &config.keys[0].outbound;
+
+            assert_eq!(
+                outbound[0],
+                OutboundConfig::Dsn(Some("https://plain@sentry.io/1".to_string()))
+            );
+            match &outbound[1] {
+                OutboundConfig::Detailed { sample_rate, .. } => {
+                    assert_eq!(*sample_rate, Some(SampleRateConfig::Uniform(0.5)));
+                }
+                _ => panic!("Expected Detailed variant"),
+            }
+            match &outbound[2] {
+                OutboundConfig::Detailed { sample_rate, .. } => {
+                    let expected = BTreeMap::from([("span".to_string(), 0.05)]);
+                    assert_eq!(*sample_rate, Some(SampleRateConfig::PerCategory(expected)));
+                }
+                _ => panic!("Expected Detailed variant"),
+            }
+
+            Ok(())
+        });
     }
 }
