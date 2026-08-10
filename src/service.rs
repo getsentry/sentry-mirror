@@ -12,8 +12,8 @@ use hyper::{Request, Response};
 use hyper_tls::HttpsConnector;
 
 use crate::dsn;
-use crate::request;
 use crate::envelope;
+use crate::request;
 use crate::state::AppState;
 
 type GenericError = Box<dyn std::error::Error + Send + Sync>;

@@ -117,21 +117,27 @@ pub fn update_envelope(
     }
 
     // Modify the envelope items (applying category filters and sample_rate soon)
-    envelope.items = envelope.items.into_iter()
+    envelope.items = envelope
+        .items
+        .into_iter()
         .filter(|item| {
             // Apply category filtering
-            let item_type = item.header.get("type").and_then(|v| v.as_str()).unwrap_or("");
+            let item_type = item
+                .header
+                .get("type")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
             categories.is_empty() || categories.contains(&item_type.to_string())
         })
         // TODO implement sample rates
         .map(|mut item| {
             if new_event_id.is_none() {
-                return item
+                return item;
             }
             // Replace event_id in the event body to align with the envelope header.
-            if let Some(event_id) = new_event_id.clone() &&
-                let Ok(mut item_body) = serde_json::from_slice::<Value>(item.body.as_ref()) &&
-                let Some(old_id) = item_body.get("event_id")
+            if let Some(event_id) = new_event_id.clone()
+                && let Ok(mut item_body) = serde_json::from_slice::<Value>(item.body.as_ref())
+                && let Some(old_id) = item_body.get("event_id")
             {
                 item_body["event_id"] = if old_id.to_string().contains("-") {
                     Value::String(event_id.clone())
@@ -141,7 +147,8 @@ pub fn update_envelope(
                 item.body = Bytes::from(serde_json::to_vec(&item_body).unwrap());
             }
             item
-        }).collect();
+        })
+        .collect();
 
     Some(envelope)
 }
@@ -539,7 +546,7 @@ mod tests {
         body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{}\n");
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound ,&[], true);
+        let result = update_envelope(envelope, &outbound, &[], true);
 
         assert!(result.is_some());
         let envelope = result.unwrap();
@@ -552,17 +559,18 @@ mod tests {
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
-        let lines = vec![
-            r#"{"key":"value"}"#, r#"{"second":"line"}"#, r#"{}"#
-        ];
+        let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#, r#"{}"#];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound ,&[], true);
+        let result = update_envelope(envelope, &outbound, &[], true);
 
         assert!(result.is_some());
         let updated = result.expect("should be some");
         assert_eq!(updated.items.len(), 1);
-        assert_eq!(*updated.header.get("key").unwrap(), Value::String("value".to_string()));
+        assert_eq!(
+            *updated.header.get("key").unwrap(),
+            Value::String("value".to_string())
+        );
     }
 
     #[test]
@@ -822,7 +830,10 @@ mod tests {
 
         assert!(result.is_some(), "Should return Some for valid input");
         let updated = result.unwrap();
-        assert_eq!("https://outbound@o789.ingest.sentry.io/6789", updated.header.get("dsn").unwrap());
+        assert_eq!(
+            "https://outbound@o789.ingest.sentry.io/6789",
+            updated.header.get("dsn").unwrap()
+        );
 
         // No items filtered out.
         assert_eq!(updated.items.len(), 2);
@@ -901,7 +912,10 @@ mod tests {
         let body: Value = serde_json::from_slice(&item.body).unwrap();
         let event_id = body.get("event_id").and_then(|v| v.as_str()).unwrap();
         assert!(event_id != "oldeventid");
-        assert!(!event_id.contains("-"), "no dashes in new id as oldeventid had no dashes");
+        assert!(
+            !event_id.contains("-"),
+            "no dashes in new id as oldeventid had no dashes"
+        );
     }
 
     #[test]
@@ -927,7 +941,10 @@ mod tests {
         let body: Value = serde_json::from_slice(&item.body).unwrap();
         let event_id = body.get("event_id").and_then(|v| v.as_str()).unwrap();
         assert!(event_id != "oldeventid");
-        assert!(event_id.contains("-"), "new event_id should contain dashes when old event_id had dashes");
+        assert!(
+            event_id.contains("-"),
+            "new event_id should contain dashes when old event_id had dashes"
+        );
     }
 
     #[test]
@@ -996,7 +1013,10 @@ mod tests {
         let item = &updated.items[1];
         let body: Value = serde_json::from_slice(&item.body).unwrap();
         let event_id = body.get("event_id").and_then(|v| v.as_str()).unwrap();
-        assert!(event_id != "replace", "event id replacement should work on inferred item lengths");
+        assert!(
+            event_id != "replace",
+            "event id replacement should work on inferred item lengths"
+        );
     }
 
     #[test]
@@ -1119,9 +1139,11 @@ mod tests {
         assert_eq!(updated.items.len(), 2);
 
         let feedback_body: Value = serde_json::from_slice(&updated.items[0].body).unwrap();
-        let event_id = feedback_body.get("event_id").and_then(|v| v.as_str()).unwrap();
+        let event_id = feedback_body
+            .get("event_id")
+            .and_then(|v| v.as_str())
+            .unwrap();
         assert!(event_id != "original-id", "event_id should change");
-
 
         let event_body: Value = serde_json::from_slice(&updated.items[1].body).unwrap();
         let event_id = event_body.get("event_id").and_then(|v| v.as_str()).unwrap();
@@ -1156,8 +1178,7 @@ mod tests {
         let updated = result.unwrap();
         assert_eq!(updated.items.len(), 2);
         assert!(
-            *updated.header.get("event_id").unwrap()
-            != Value::String("original-id".to_string()),
+            *updated.header.get("event_id").unwrap() != Value::String("original-id".to_string()),
             "event id should be changed"
         );
     }
