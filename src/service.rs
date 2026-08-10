@@ -146,7 +146,7 @@ where
 
             // Create a RequestBuilder for the outbound request.
             let request_builder =
-                request::make_outbound_request(&state.config, &uri, &headers, &outbound.dsn);
+                request::make_outbound_request(&uri, &headers, &outbound.dsn);
 
             let new_body = if is_envelope && envelope.is_some() {
                 // TODO measure the impact of these additional allocations

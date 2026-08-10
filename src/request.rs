@@ -24,7 +24,6 @@ const INGEST_PATH_SEGMENTS: [&str; 4] = ["envelope", "minidump", "store", "integ
 /// to the outbound DSN. This function returns `RequestBuilder` because the body types
 /// are tedious to deal with.
 pub fn make_outbound_request(
-    config: &ConfigData,
     uri: &Uri,
     headers: &HeaderMap,
     outbound: &dsn::Dsn,
@@ -319,7 +318,7 @@ mod tests {
         headers.insert("X-Forwarded-For", "127.0.0.1".parse().unwrap());
         headers.insert("Content-Encoding", "gzip".parse().unwrap());
 
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -346,7 +345,7 @@ mod tests {
         headers.insert("Origin", "example.com".parse().unwrap());
         headers.insert("X-Sentry-Auth", "sentry_key=abcdef".parse().unwrap());
 
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -374,7 +373,7 @@ mod tests {
             "sentry_version=7,sentry_key=abcdef".parse().unwrap(),
         );
 
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -400,7 +399,7 @@ mod tests {
                 .unwrap();
 
         let headers = HeaderMap::new();
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
         assert!(res.is_ok());
         let req = res.unwrap();
@@ -430,7 +429,7 @@ mod tests {
             "sentry_version=7,sentry_key=abcdef".parse().unwrap(),
         );
 
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
         assert!(res.is_ok());
         let req = res.unwrap();
@@ -448,7 +447,7 @@ mod tests {
             .unwrap();
 
         let headers = HeaderMap::new();
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
         assert!(res.is_ok());
         let req = res.unwrap();
@@ -468,7 +467,7 @@ mod tests {
             .unwrap();
 
         let headers = HeaderMap::new();
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -491,7 +490,7 @@ mod tests {
             .unwrap();
 
         let headers = HeaderMap::new();
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -515,7 +514,7 @@ mod tests {
         headers.insert("X-Sentry-Auth", "sentry_key=abcdef".parse().unwrap());
         headers.insert("Content-Encoding", "br".parse().unwrap());
 
-        let builder = make_outbound_request(&config, &uri, &headers, &outbound);
+        let builder = make_outbound_request(&uri, &headers, &outbound);
         let res = builder.body("");
 
         assert!(res.is_ok());
@@ -844,7 +843,10 @@ mod tests {
         let categories = vec!["transaction".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
         let result = update_envelope(envelope, &outbound, &categories, false);
-        assert!(result.is_none(), "all items filtered, envelope is not needed");
+        assert!(
+            result.is_none(),
+            "all items filtered, envelope is not needed"
+        );
     }
 
     #[test]
