@@ -23,8 +23,8 @@ keys:
       - https://public-key-blue@o456.ingest.us.sentry.io/654321
 ```
 
-You can also enable selective forwarding to an outbound DSN based on envelope item categories,
-and item multipliers:
+You can also enable selective forwarding to an outbound DSN based on envelope item `categories`,
+`sample_rate` and item `multiplier`:
 
 ```yaml
 ip: 0.0.0.0
@@ -38,11 +38,42 @@ keys:
         multiplier: 5
 ```
 
-When `categories` is a non-empty list only those categories will be forwarded. If
-the category list is empty or undefined *all categories* will be forwarded. When `multiplier`
-is used, mirror will copy matching envelope items *n* times. Each copy will have a 
-unique `event_id` assigned to it. Multipliers are useful when you need to amplify writes
-from an application to increase load on a sentry instance.
+When `categories` is a non-empty list, only items with those categories will be
+forwarded to the outbound DSN. If the category list is empty or undefined *all
+categories* will be forwarded. When `multiplier` is used, mirror will copy
+matching envelope items *n* times. Each copy will have a unique `event_id`
+assigned to it. Multipliers are useful when you need to amplify writes from an
+application to increase load on a sentry instance.
+
+Outbound DSN keys can a `sample_rate` defined:
+
+```yaml
+ip: 0.0.0.0
+port: 3000
+keys:
+  - inbound: http://public-key@sentry-mirror.acme.org/1847101
+    outbound:
+      - https://public-key-red@o123.ingest.de.sentry.io/123456
+
+      # Sample all categories at 0.5
+      - dsn: https://public-key-blue@o456.ingest.us.sentry.io/654321
+        sample_rate: 0.5
+
+      # Sample spans at 0.05 and all other categories at 1.0
+      - dsn: https://public-key-blue@o456.ingest.us.sentry.io/654321
+        sample_rate:
+            span: 0.05
+```
+
+The `sample_rate` option is either a mapping of categories and their sample
+rate, or a simple float. When `sample_rate` is defined as a float, it applies to
+*all* categories. When defined as a map, if a category is not defined in the
+`sample_rate` mapping, the rate is assumed to be `1.0`. Sample rates must be
+between `0 - 1.0` inclusive. Out of bounds values emit warnings during startup
+and the values are clamped to the closest boundary.
+
+:warning: Combining `multiplier` and `sample_rate` is a configuration error,
+that should cause the mirror to log an error and ignore the `multiplier` value.
 
 ## Request rewriting
 
@@ -51,6 +82,7 @@ When events are mirrored to outbound DSNs the following modifications may be mad
 1. `sentry_key` component of `Authorization` and `X-Sentry-Auth` headers will be replaced.
 2. `dsn` in envelope headers will be replaced.
 3. `trace.public_key` in envelope headers will be replaced.
+3. `trace.sample_rate` is recalculated if `sample_rate` is defined on the DSN configuration.
 4. Content-Length, Content-Encoding, Host, X-Forwarded-For headers will be removed.
 
 sentry-mirror will send outbound requests concurrently and respond with the response 
