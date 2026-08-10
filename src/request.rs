@@ -303,7 +303,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_remove_proxy_headers() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -333,7 +332,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_sentry_auth_header() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -358,7 +356,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_authorization_header() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -389,7 +386,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_query_key() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -413,7 +409,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_path_host_and_scheme() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -440,7 +435,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_with_custom_port() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "http://public@relay:3001/123456".parse().unwrap();
         let uri: Uri = "https://o123.ingest.sentry.io/api/1/envelope/"
             .parse()
@@ -458,7 +452,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_project_id_oltp_url() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -481,7 +474,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_replace_project_id_minidump_url() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
             .parse()
             .unwrap();
@@ -501,7 +493,6 @@ mod tests {
 
     #[test]
     fn make_outbound_request_content_encoding_header() {
-        let config = ConfigData::default();
         let outbound: dsn::Dsn = "https://outbound@o123.ingest.sentry.io/6789"
             .parse()
             .unwrap();
