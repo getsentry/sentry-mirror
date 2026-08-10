@@ -401,7 +401,7 @@ def test_mirror_filters_envelopes(category_mirror_process, stub_servers):
     assert server1_requests[0]['body'] == server2_requests[0]['body']
     assert len(server1_requests[0]['body']) > 0
 
-    assert '"type":"log",' in server2_requests[1]["body"]
+    assert ',"type":"log"' in server2_requests[1]["body"]
 
 
 def test_mirror_multiplies_envelopes(multiplier_mirror_process, stub_servers):
