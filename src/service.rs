@@ -156,7 +156,7 @@ where
                 match request::update_envelope(cloned, &outbound.dsn, &outbound.categories, i > 0) {
                     Some(envelope) => envelope.to_bytes(),
                     None => {
-                        // Skip sending requests for that didn't yield an envelope
+                        // Skip sending out requests for those that didn't yield an envelope
                         // from filtering and mutations.
                         metrics::counter!(
                             "handle_proxy.outbound_request.skipped",
