@@ -15,7 +15,7 @@ use uuid::Uuid;
 use crate::config::ConfigData;
 use crate::dsn;
 use crate::envelope::{Envelope, EnvelopeItem};
-use crate::sampling::{self, SampleRates};
+use crate::sampling;
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
 const NO_COPY_HEADERS: [&str; 3] = ["host", "x-forwarded-for", "content-length"];
@@ -75,12 +75,13 @@ pub fn make_outbound_request(
     builder
 }
 
-/// Update the envelope body mutating it to incorporate the outbound_dsn and a new event id.
+/// Update the envelope body mutating it to incorporate the outbound entry's DSN
+/// and a new event id.
 ///
 /// Will do the following:
 ///
 /// - Replace the DSN key in the envelope header with the outbound DSN.
-/// - Will filter envelope items based on the categories.
+/// - Will filter envelope items based on the entry's categories.
 /// - Can replace event ids in event headers which is necessary when mirror
 ///   is multiplying requests. Each copy needs a different eventid to preserve
 ///   the eventid + project uniqueness.
@@ -88,11 +89,11 @@ pub fn make_outbound_request(
 /// See the envelope specs https://develop.sentry.dev/sdk/envelopes/
 pub fn update_envelope(
     mut envelope: Envelope,
-    outbound_dsn: &dsn::Dsn,
-    categories: &[String],
+    outbound: &dsn::OutboundEntry,
     replace_item_id: bool,
-    sample_rate: Option<&SampleRates>,
 ) -> Option<Envelope> {
+    let outbound_dsn = &outbound.dsn;
+
     // If we need to replace the event_id generate a new v4 uuid
     let new_event_id = if replace_item_id {
         Some(Uuid::new_v4().to_string())
@@ -116,6 +117,7 @@ pub fn update_envelope(
     }
 
     // Apply category filtering.
+    let categories = &outbound.categories;
     envelope
         .items
         .retain(|item| categories.is_empty() || categories.contains(&item_type(item).to_string()));
@@ -127,7 +129,7 @@ pub fn update_envelope(
 
     // Sampling is applied after category filtering so that the primary item is
     // chosen from the items that will actually be sent.
-    if let Some(rates) = sample_rate
+    if let Some(rates) = &outbound.sample_rate
         && rates.is_active()
     {
         let category = primary_category(&envelope.items);
@@ -373,6 +375,7 @@ mod tests {
     use super::*;
     use crate::config::SampleRateConfig;
     use crate::envelope;
+    use crate::sampling::SampleRates;
 
     fn make_test_config() -> ConfigData {
         ConfigData::default()
@@ -381,6 +384,14 @@ mod tests {
     fn string_list_to_bytes(lines: Vec<&str>) -> Bytes {
         let joined = lines.join("\n");
         Bytes::from(joined)
+    }
+
+    /// An outbound entry with default options. Use struct update syntax to
+    /// change the options a test cares about.
+    fn test_entry() -> dsn::OutboundEntry {
+        "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .expect("outbound DSN should parse")
     }
 
     #[test]
@@ -600,14 +611,12 @@ mod tests {
 
     #[test]
     fn test_update_envelope_empty_body() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
         let mut body = Vec::new();
         body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{}\n");
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &[], true, None);
+        let result = update_envelope(envelope, &outbound, true);
 
         assert!(result.is_some());
         let envelope = result.unwrap();
@@ -617,13 +626,11 @@ mod tests {
 
     #[test]
     fn test_update_envelope_missing_key() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
         let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#, r#"{}"#];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &[], true, None);
+        let result = update_envelope(envelope, &outbound, true);
 
         assert!(result.is_some());
         let updated = result.expect("should be some");
@@ -636,9 +643,7 @@ mod tests {
 
     #[test]
     fn test_update_envelope_replace_dsn_only_first_line() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
         let lines = vec![
             r#"{"dsn":"value"}"#,
             r#"{"second":"line", "dsn":"value", "length":33}"#,
@@ -646,7 +651,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &[], false, None);
+        let result = update_envelope(envelope, &outbound, false);
 
         assert!(result.is_some());
         let updated = result.expect("should be updated");
@@ -662,9 +667,7 @@ mod tests {
 
     #[test]
     fn test_update_envelope_present() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
         let lines = vec![
             r#"{"dsn":"https://deadbeef@ingest.sentry.io/123","event_id":"5cb13bb8-eb7f-4a50-a8d8-9d309fd1049d"}"#,
             r#"{"type":"event", "length":30}"#,
@@ -672,7 +675,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("should parse");
-        let result = update_envelope(envelope, &outbound, &[], false, None);
+        let result = update_envelope(envelope, &outbound, false);
 
         assert!(result.is_some());
 
@@ -690,9 +693,7 @@ mod tests {
 
     #[test]
     fn test_update_envelope_trace_public_key() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
         let lines = vec![
             r#"{"dsn":"http://abcdef@localhost:3000/12345","trace":{"public_key":"abcdef"}}"#,
             r#"{"second":"line", "dsn":"value", "length":19}"#,
@@ -700,7 +701,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("should parse");
-        let result = update_envelope(envelope, &outbound, &[], false, None);
+        let result = update_envelope(envelope, &outbound, false);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -845,9 +846,7 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_empty_categories() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
 
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"dsn\":\"value\"}\n");
@@ -857,9 +856,8 @@ mod tests {
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
         body.extend_from_slice(b"test");
 
-        let categories: Vec<String> = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, false, None);
+        let result = update_envelope(envelope, &outbound, false);
 
         assert!(result.is_some(), "Should return Some for valid input");
         let updated = result.unwrap();
@@ -876,9 +874,10 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_with_categories() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = dsn::OutboundEntry {
+            categories: vec!["event".to_string()],
+            ..test_entry()
+        };
 
         let mut body = Vec::new();
         body.extend_from_slice(b"{\"dsn\":\"value\"}\n");
@@ -888,9 +887,8 @@ mod tests {
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
         body.extend_from_slice(b"test");
 
-        let categories = vec!["event".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, false, None);
+        let result = update_envelope(envelope, &outbound, false);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -901,9 +899,10 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_with_categories_filter_all_items() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = dsn::OutboundEntry {
+            categories: vec!["transaction".to_string()],
+            ..test_entry()
+        };
 
         let mut body = Vec::new();
         body.extend_from_slice(b"{}\n");
@@ -913,9 +912,8 @@ mod tests {
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
         body.extend_from_slice(b"test");
 
-        let categories = vec!["transaction".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, false, None);
+        let result = update_envelope(envelope, &outbound, false);
         assert!(
             result.is_none(),
             "all items filtered, envelope is not needed"
@@ -924,18 +922,15 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_replace_id_no_dashes() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
 
         let mut body = Vec::new();
         body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":41}\n");
         body.extend_from_slice(b"{\"event_id\":\"oldeventid\",\"other\":\"value\"}");
 
-        let categories = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true, None);
+        let result = update_envelope(envelope, &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -953,18 +948,15 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_replace_id_preserve_dashes() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
 
         let mut body = Vec::new();
         body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":43}\n");
         body.extend_from_slice(b"{\"event_id\":\"old-event-id\",\"other\":\"value\"}");
 
-        let categories = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true, None);
+        let result = update_envelope(envelope, &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -982,9 +974,10 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_multiline_data() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = dsn::OutboundEntry {
+            categories: vec!["attachment".to_string()],
+            ..test_entry()
+        };
 
         let attachment_data = "hello\nhello";
         let attachment_header = format!(
@@ -1001,9 +994,8 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let categories = vec!["attachment".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, false, None);
+        let result = update_envelope(envelope, &outbound, false);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1015,9 +1007,7 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_item_header_no_length() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
 
         // When items don't have a length, we infer that the next line contains the entire payload.
         // Multi-line payloads *must* have length defined.
@@ -1029,9 +1019,8 @@ mod tests {
         body.extend_from_slice(b"{\"type\":\"feedback\"}\n");
         body.extend_from_slice(b"{\"event_id\":\"replace\", \"contexts\":{\"feedback\":{}}}");
 
-        let categories: Vec<String> = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true, None);
+        let result = update_envelope(envelope, &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1054,9 +1043,10 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_binary_data() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = dsn::OutboundEntry {
+            categories: vec!["attachment".to_string()],
+            ..test_entry()
+        };
 
         let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
         let binary_header = format!(
@@ -1070,9 +1060,8 @@ mod tests {
         body.extend_from_slice(&binary_data);
         body.push(b'\n');
 
-        let categories = vec!["attachment".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true, None);
+        let result = update_envelope(envelope, &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1082,9 +1071,10 @@ mod tests {
 
     #[test]
     fn test_update_envelope_body_binary_data_replace_id() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = dsn::OutboundEntry {
+            categories: vec!["attachment".to_string()],
+            ..test_entry()
+        };
 
         let binary_data: Vec<u8> = vec![0xFF, 0xFE, 0x00, 0x0A, 0x80, 0x90, 0xA0, 0xB0, 0xC0];
         let binary_header = format!(
@@ -1099,9 +1089,8 @@ mod tests {
         // Trailing newlines are removed
         body.push(b'\n');
 
-        let categories = vec!["attachment".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true, None);
+        let result = update_envelope(envelope, &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1112,9 +1101,10 @@ mod tests {
 
     #[test]
     fn test_update_envelope_replace_item_id_with_categories() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = dsn::OutboundEntry {
+            categories: vec!["event".to_string()],
+            ..test_entry()
+        };
         let mut body = Vec::new();
         // Envelope header
         body.extend_from_slice(
@@ -1130,9 +1120,8 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let categories = vec!["event".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true, None);
+        let result = update_envelope(envelope, &outbound, true);
         assert!(result.is_some());
 
         let updated = result.unwrap();
@@ -1148,9 +1137,7 @@ mod tests {
 
     #[test]
     fn test_update_envelope_replace_multiple_ids() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
         let mut body = Vec::new();
         // Envelope header
         body.extend_from_slice(
@@ -1164,9 +1151,8 @@ mod tests {
         body.extend_from_slice(b"{\"type\":\"event\",\"length\":43}\n");
         body.extend_from_slice(b"{\"event_id\":\"original-id\",\"message\":\"test\"}\n");
 
-        let categories = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true, None);
+        let result = update_envelope(envelope, &outbound, true);
         assert!(result.is_some());
         let updated = result.unwrap();
         assert_eq!(updated.items.len(), 2);
@@ -1185,9 +1171,7 @@ mod tests {
 
     #[test]
     fn test_modify_envelope_binary_crlf_replace_id() {
-        let outbound: dsn::Dsn = "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap();
+        let outbound = test_entry();
         let mut body = Vec::new();
         // Envelope header
         body.extend_from_slice(
@@ -1203,9 +1187,8 @@ mod tests {
         body.extend_from_slice(b"test");
         body.push(b'\n');
 
-        let categories = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true, None);
+        let result = update_envelope(envelope, &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1244,20 +1227,20 @@ mod tests {
         envelope::parse(&body).expect("body should parse")
     }
 
-    fn test_dsn() -> dsn::Dsn {
-        "https://outbound@o789.ingest.sentry.io/6789"
-            .parse()
-            .unwrap()
+    /// An outbound entry that samples traffic at `rates`.
+    fn sampled_entry(rates: SampleRates) -> dsn::OutboundEntry {
+        dsn::OutboundEntry {
+            sample_rate: Some(rates),
+            ..test_entry()
+        }
     }
 
     #[test]
     fn test_update_envelope_sample_rate_zero_drops() {
         let result = update_envelope(
             sampling_envelope("error"),
-            &test_dsn(),
-            &[],
+            &sampled_entry(category_rates(&[("error", 0.0)])),
             false,
-            Some(&category_rates(&[("error", 0.0)])),
         );
 
         assert!(result.is_none(), "a 0.0 rate should drop the envelope");
@@ -1267,10 +1250,8 @@ mod tests {
     fn test_update_envelope_sample_rate_one_keeps() {
         let result = update_envelope(
             sampling_envelope("error"),
-            &test_dsn(),
-            &[],
+            &sampled_entry(category_rates(&[("error", 1.0)])),
             false,
-            Some(&category_rates(&[("error", 1.0)])),
         );
 
         assert!(result.is_some(), "a 1.0 rate should keep the envelope");
@@ -1280,10 +1261,8 @@ mod tests {
     fn test_update_envelope_sample_rate_unlisted_category_kept() {
         let result = update_envelope(
             sampling_envelope("error"),
-            &test_dsn(),
-            &[],
+            &sampled_entry(category_rates(&[("span", 0.0)])),
             false,
-            Some(&category_rates(&[("span", 0.0)])),
         );
 
         assert!(
@@ -1296,10 +1275,8 @@ mod tests {
     fn test_update_envelope_sample_rate_uniform_zero_drops() {
         let result = update_envelope(
             sampling_envelope("transaction"),
-            &test_dsn(),
-            &[],
+            &sampled_entry(uniform_rates(0.0)),
             false,
-            Some(&uniform_rates(0.0)),
         );
 
         assert!(result.is_none(), "uniform rates apply to every category");
@@ -1321,10 +1298,8 @@ mod tests {
         let envelope = envelope::parse(&body).expect("body should parse");
         let result = update_envelope(
             envelope,
-            &test_dsn(),
-            &[],
+            &sampled_entry(category_rates(&[("attachment", 0.0)])),
             false,
-            Some(&category_rates(&[("attachment", 0.0)])),
         );
         assert!(
             result.is_some(),
@@ -1335,10 +1310,8 @@ mod tests {
         let envelope = envelope::parse(&body).expect("body should parse");
         let result = update_envelope(
             envelope,
-            &test_dsn(),
-            &[],
+            &sampled_entry(category_rates(&[("event", 0.0)])),
             false,
-            Some(&category_rates(&[("event", 0.0)])),
         );
         assert!(
             result.is_none(),
@@ -1357,13 +1330,11 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(
-            envelope,
-            &test_dsn(),
-            &["event".to_string()],
-            false,
-            Some(&category_rates(&[("attachment", 0.0)])),
-        );
+        let outbound = dsn::OutboundEntry {
+            categories: vec!["event".to_string()],
+            ..sampled_entry(category_rates(&[("attachment", 0.0)]))
+        };
+        let result = update_envelope(envelope, &outbound, false);
 
         assert!(
             result.is_some(),
@@ -1454,13 +1425,12 @@ mod tests {
             r#"{"type":"transaction","length":4}"#,
             "test",
         ]);
-        let rates = uniform_rates(0.5);
+        let outbound = sampled_entry(uniform_rates(0.5));
 
         let mut kept = 0;
         for _ in 0..50 {
             let envelope = envelope::parse(&body).expect("body should parse");
-            let Some(updated) = update_envelope(envelope, &test_dsn(), &[], false, Some(&rates))
-            else {
+            let Some(updated) = update_envelope(envelope, &outbound, false) else {
                 continue;
             };
             kept += 1;
@@ -1476,16 +1446,10 @@ mod tests {
 
     #[test]
     fn test_update_envelope_sample_rate_half_is_probabilistic() {
-        let rates = uniform_rates(0.5);
+        let outbound = sampled_entry(uniform_rates(0.5));
         let mut kept = 0;
         for _ in 0..200 {
-            let result = update_envelope(
-                sampling_envelope("error"),
-                &test_dsn(),
-                &[],
-                false,
-                Some(&rates),
-            );
+            let result = update_envelope(sampling_envelope("error"), &outbound, false);
             if result.is_some() {
                 kept += 1;
             }
