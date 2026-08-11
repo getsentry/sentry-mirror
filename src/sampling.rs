@@ -115,7 +115,7 @@ pub fn roll(rate: f64) -> bool {
         return false;
     }
 
-    rate < rand::rng().random::<f64>()
+    rate > rand::rng().random::<f64>()
 }
 
 #[cfg(test)]
