@@ -105,6 +105,7 @@ impl FromStr for Dsn {
     }
 }
 
+/// An outbound DSN with configuration options
 #[derive(Debug, PartialEq, Clone)]
 pub struct OutboundEntry {
     pub dsn: Dsn,
@@ -116,14 +117,29 @@ pub struct OutboundEntry {
     pub sample_rate: Option<SampleRates>,
 }
 
+impl FromStr for OutboundEntry {
+    type Err = DsnParseError;
+
+    /// Parse a DSN string into an entry that mirrors all traffic with
+    /// default options.
+    fn from_str(input: &str) -> Result<Self, Self::Err> {
+        Ok(OutboundEntry {
+            dsn: input.parse::<Dsn>()?,
+            categories: vec![],
+            multiplier: 1,
+            sample_rate: None,
+        })
+    }
+}
+
 #[derive(Debug, PartialEq)]
 pub struct DsnKeyRing {
     pub inbound: Dsn,
     pub outbound: Vec<OutboundEntry>,
 }
 
-fn parse_outbound(dsn: &str) -> Dsn {
-    dsn.parse::<Dsn>().expect("Invalid outbound DSN")
+fn parse_outbound(dsn: &str) -> OutboundEntry {
+    dsn.parse::<OutboundEntry>().expect("Invalid outbound DSN")
 }
 
 /// Convert a list of Config data keys into Dsn's that we can use
@@ -140,12 +156,7 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
             .outbound
             .iter()
             .filter_map(|item| match item {
-                OutboundConfig::Dsn(opt) => opt.as_ref().map(|dsn_str| OutboundEntry {
-                    dsn: parse_outbound(dsn_str),
-                    categories: vec![],
-                    multiplier: 1,
-                    sample_rate: None,
-                }),
+                OutboundConfig::Dsn(opt) => opt.as_deref().map(parse_outbound),
                 OutboundConfig::Detailed {
                     dsn,
                     categories,
@@ -169,10 +180,10 @@ pub fn make_key_map(config: &ConfigData) -> HashMap<String, DsnKeyRing> {
                     };
 
                     Some(OutboundEntry {
-                        dsn: parse_outbound(dsn),
                         categories: categories.clone().unwrap_or_default(),
                         multiplier,
                         sample_rate,
+                        ..parse_outbound(dsn)
                     })
                 }
             })
