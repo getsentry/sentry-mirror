@@ -1,0 +1,12 @@
+---
+ip: 0.0.0.0
+port: 3001
+log_filter: info
+keys:
+  - inbound: http://390bf7f953b7492c9007d2cf69078adf@localhost:3001/456
+    outbound:
+      # Sample all categories, so that trace.sample_rate is recalculated.
+      - dsn: "http://d2030950546a6177f9cdb0663b069aed@localhost:8001/789"
+        sample_rate: 0.5
+      # Forward everything (no sampling)
+      - dsn: "http://e3141a61657b7288facec1774c17afbe@localhost:8002/789"

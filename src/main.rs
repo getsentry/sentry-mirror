@@ -17,6 +17,7 @@ mod envelope;
 mod logging;
 mod metrics;
 mod request;
+mod sampling;
 mod service;
 mod state;
 

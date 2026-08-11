@@ -14,6 +14,7 @@ use hyper_tls::HttpsConnector;
 use crate::dsn;
 use crate::envelope;
 use crate::request;
+use crate::sampling;
 use crate::state::AppState;
 
 type GenericError = Box<dyn std::error::Error + Send + Sync>;
@@ -152,7 +153,13 @@ where
                 let cloned = envelope.clone().unwrap();
 
                 // Generate a new body for the request if modifying envelopes is enabled.
-                match request::update_envelope(cloned, &outbound.dsn, &outbound.categories, i > 0) {
+                match request::update_envelope(
+                    cloned,
+                    &outbound.dsn,
+                    &outbound.categories,
+                    i > 0,
+                    outbound.sample_rate.as_ref(),
+                ) {
                     Some(envelope) => envelope.to_bytes(),
                     None => {
                         // Skip sending out requests for those that didn't yield an envelope
@@ -170,6 +177,22 @@ where
                     }
                 }
             } else {
+                // Payloads that aren't envelopes (minidumps, otlp) and have no items
+                // use `unknown` as a placeholder category
+                if let Some(rates) = &outbound.sample_rate
+                    && rates.is_active()
+                    && !sampling::roll(rates.rate_for("unknown"))
+                {
+                    metrics::counter!(
+                        "handle_proxy.outbound_request.sampled_out",
+                        "outbound_host" => outbound_host.clone(),
+                        "category" => "unknown",
+                    )
+                    .increment(1);
+                    debug!("Sampling out request for {}", outbound_host);
+
+                    continue;
+                }
                 body_bytes.clone()
             };
 
@@ -225,7 +248,11 @@ where
                 found_body = true;
             }
         } else {
-            metrics::counter!("handle_proxy.outbound_request.failed").increment(1);
+            metrics::counter!(
+                "handle_proxy.outbound_request.failed",
+                "outbound_host" => resp_hostname.clone()
+            )
+            .increment(1);
             warn!("Could not make request: {0:?}", response_res.err());
         }
     }

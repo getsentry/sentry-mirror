@@ -112,6 +112,46 @@ def multiplier_mirror_process():
 
 
 @pytest.fixture
+def sampling_mirror_process():
+    """Start the mirror application and ensure it shuts down after tests."""
+    config_path = Path(__file__).parent / "sampling-test.yaml"
+    process = subprocess.Popen(
+        ["cargo", "run", "--", f"--config={config_path}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    logger.info("Starting mirror")
+    wait_for_server(process, "localhost", 3001)
+
+    yield process
+
+    # Cleanup
+    logger.info("Teardown mirror")
+    kill_process(process)
+
+
+@pytest.fixture
+def sampling_trace_mirror_process():
+    """Start the mirror application and ensure it shuts down after tests."""
+    config_path = Path(__file__).parent / "sampling-trace-test.yaml"
+    process = subprocess.Popen(
+        ["cargo", "run", "--", f"--config={config_path}"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    logger.info("Starting mirror")
+    wait_for_server(process, "localhost", 3001)
+
+    yield process
+
+    # Cleanup
+    logger.info("Teardown mirror")
+    kill_process(process)
+
+
+@pytest.fixture
 def stub_servers():
     """Start the two stub servers and ensure they shut down after tests."""
     timestamp = int(time.time())
@@ -452,6 +492,74 @@ def test_mirror_multiplies_envelopes(multiplier_mirror_process, stub_servers):
             f"Server2 request {i} item header should match server1"
         assert normalized_server2[2] == normalized_server1[2], \
             f"Server2 request {i} payload should match server1 after event_id normalization"
+
+
+def test_mirror_samples_envelopes(sampling_mirror_process, stub_servers):
+    """
+    Test that the mirror applies sample rates per category
+
+    server_one samples errors at 0.0 and transactions at 1.0, so it only
+    receives the transaction. server_two is unsampled and receives both.
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "error-python.txt"
+    response = send_envelope_to_mirror(fixture_path)
+    assert response.status_code == 200, f"Mirror returned {response.status_code}"
+
+    fixture_path = Path(__file__).parent / "fixtures" / "transaction-python.txt"
+    response = send_envelope_to_mirror(fixture_path)
+    assert response.status_code == 200, f"Mirror returned {response.status_code}"
+
+    # Give the mirror time to forward requests
+    time.sleep(1)
+
+    server_one, server_two = stub_servers
+    server1_requests = read_logs(server_one["logfile"])
+    server2_requests = read_logs(server_two["logfile"])
+
+    assert len(server1_requests) == 1, \
+        f"Server 1 should only receive the transaction, got {len(server1_requests)}"
+    assert len(server2_requests) == 2, \
+        f"Server 2 should receive both envelopes, got {len(server2_requests)}"
+
+    assert '"type":"transaction"' in server1_requests[0]["body"], \
+        "The error should have been sampled out"
+
+
+def test_mirror_recalculates_trace_sample_rate(sampling_trace_mirror_process, stub_servers):
+    """
+    Test that trace.sample_rate reflects the mirror sampling that was applied.
+
+    server_one samples at 0.5, so the envelopes it does receive should report
+    1.0 * 0.5. server_two is unsampled and keeps the original rate.
+    """
+    fixture_path = Path(__file__).parent / "fixtures" / "transaction-dsc.txt"
+    attempts = 20
+    for _ in range(attempts):
+        response = send_envelope_to_mirror(fixture_path)
+        assert response.status_code == 200, f"Mirror returned {response.status_code}"
+
+    # Give the mirror time to forward requests
+    time.sleep(1)
+
+    server_one, server_two = stub_servers
+    server1_requests = read_logs(server_one["logfile"])
+    server2_requests = read_logs(server_two["logfile"])
+
+    # Sampling at 0.5 over 20 attempts, the odds of receiving nothing are 2^-20
+    assert len(server1_requests) > 0, "Server 1 should receive some envelopes"
+    assert len(server1_requests) < attempts, "Server 1 should not receive every envelope"
+    assert len(server2_requests) == attempts, \
+        f"Server 2 should receive every envelope, got {len(server2_requests)}"
+
+    for request in server1_requests:
+        header, _, _ = parse_envelope(request["body"])
+        assert header["trace"]["sample_rate"] == "0.5", \
+            f"Sampled envelopes should report the mirrored rate, got {header['trace']['sample_rate']}"
+
+    for request in server2_requests:
+        header, _, _ = parse_envelope(request["body"])
+        assert header["trace"]["sample_rate"] == "1.0", \
+            "Unsampled envelopes should keep the original rate"
 
 
 def parse_envelope(envelope_body: str) -> tuple[dict, dict, dict]:

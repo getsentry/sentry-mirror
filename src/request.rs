@@ -14,7 +14,8 @@ use uuid::Uuid;
 
 use crate::config::ConfigData;
 use crate::dsn;
-use crate::envelope::Envelope;
+use crate::envelope::{Envelope, EnvelopeItem};
+use crate::sampling::{self, SampleRates};
 
 /// Several headers should not be forwarded as they can cause data truncation, or incorrect behavior.
 const NO_COPY_HEADERS: [&str; 3] = ["host", "x-forwarded-for", "content-length"];
@@ -90,6 +91,7 @@ pub fn update_envelope(
     outbound_dsn: &dsn::Dsn,
     categories: &[String],
     replace_item_id: bool,
+    sample_rate: Option<&SampleRates>,
 ) -> Option<Envelope> {
     // If we need to replace the event_id generate a new v4 uuid
     let new_event_id = if replace_item_id {
@@ -113,46 +115,125 @@ pub fn update_envelope(
         envelope.header["event_id"] = Value::String(event_id);
     }
 
-    // Modify the envelope items (applying category filters and sample_rate soon)
-    envelope.items = envelope
+    // Apply category filtering.
+    envelope
         .items
-        .into_iter()
-        .filter(|item| {
-            // Apply category filtering
-            let item_type = item
-                .header
-                .get("type")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            categories.is_empty() || categories.contains(&item_type.to_string())
-        })
-        // TODO implement sample rates
-        .map(|mut item| {
-            if new_event_id.is_none() {
-                return item;
-            }
-            // Replace event_id in the event body to align with the envelope header.
-            if let Some(event_id) = new_event_id.clone()
-                && let Ok(mut item_body) = serde_json::from_slice::<Value>(item.body.as_ref())
-                && let Some(old_id) = item_body.get("event_id")
-            {
-                item_body["event_id"] = if old_id.to_string().contains("-") {
-                    Value::String(event_id.clone())
-                } else {
-                    Value::String(event_id.replace("-", "").clone())
-                };
-                item.body = Bytes::from(serde_json::to_vec(&item_body).unwrap());
-            }
-            item
-        })
-        .collect();
+        .retain(|item| categories.is_empty() || categories.contains(&item_type(item).to_string()));
 
     // If the envelope has had all items removed we don't send it.
     if envelope.items.is_empty() {
         return None;
     }
 
+    // Sampling is applied after category filtering so that the primary item is
+    // chosen from the items that will actually be sent.
+    if let Some(rates) = sample_rate
+        && rates.is_active()
+    {
+        let category = primary_category(&envelope.items);
+        let rate = rates.rate_for(category);
+        if !sampling::roll(rate) {
+            metrics::counter!(
+                "handle_proxy.outbound_request.sampled_out",
+                "outbound_host" => outbound_dsn.host.clone(),
+                "category" => category.to_string(),
+            )
+            .increment(1);
+            debug!(
+                "Sampling out envelope for {0} with rate {rate}",
+                outbound_dsn.host
+            );
+
+            return None;
+        }
+        scale_trace_sample_rate(&mut envelope.header, rate);
+    }
+
+    // Replace event ids when the envelope is being multiplied.
+    if new_event_id.is_some() {
+        envelope.items = envelope
+            .items
+            .into_iter()
+            .map(|mut item| {
+                // Replace event_id in the event body to align with the envelope header.
+                if let Some(event_id) = new_event_id.clone()
+                    && let Ok(mut item_body) = serde_json::from_slice::<Value>(item.body.as_ref())
+                    && let Some(old_id) = item_body.get("event_id")
+                {
+                    item_body["event_id"] = if old_id.to_string().contains("-") {
+                        Value::String(event_id.clone())
+                    } else {
+                        Value::String(event_id.replace("-", "").clone())
+                    };
+                    item.body = Bytes::from(serde_json::to_vec(&item_body).unwrap());
+                }
+                item
+            })
+            .collect();
+    }
+
     Some(envelope)
+}
+
+/// The `type` header of an envelope item.
+fn item_type(item: &EnvelopeItem) -> &str {
+    item.header
+        .get("type")
+        .and_then(|value| value.as_str())
+        .unwrap_or("")
+}
+
+/// The category that a sampling decision is made against.
+///
+/// Attachments accompany another item, so they are skipped in favour of the
+/// item they belong to. Dropping an event but keeping its attachment would
+/// leave the attachment orphaned.
+fn primary_category(items: &[EnvelopeItem]) -> &str {
+    items
+        .iter()
+        .map(item_type)
+        .find(|item_type| *item_type != "attachment")
+        .unwrap_or_else(|| items.first().map(item_type).unwrap_or(""))
+}
+
+/// Multiply the `trace.sample_rate` envelope header by the rate that mirror
+/// sampling used, so that the header reflects the rate data arrived at.
+///
+/// Sentry serializes this value as a string so that it survives a trip through
+/// the `baggage` header, but numbers are handled as well. The value is written
+/// back in the shape it was read in.
+fn scale_trace_sample_rate(header: &mut Value, factor: f64) {
+    // Nothing to do, and rewriting would reformat the value for no reason.
+    if factor >= 1.0 {
+        return;
+    }
+    let Some(trace) = header.get_mut("trace") else {
+        return;
+    };
+    let current = match trace.get("sample_rate") {
+        Some(Value::String(value)) => value.parse::<f64>().ok().map(|rate| (rate, true)),
+        Some(Value::Number(value)) => value.as_f64().map(|rate| (rate, false)),
+        Some(other) => {
+            warn!("Unexpected trace.sample_rate value {other:?}");
+            None
+        }
+        None => None,
+    };
+    // Envelopes without a sample rate are left alone. Adding one would claim a
+    // client side sample rate that was never used.
+    let Some((current, was_string)) = current else {
+        return;
+    };
+
+    let updated = (current * factor).clamp(0.0, 1.0);
+    trace["sample_rate"] = if was_string {
+        Value::String(format!("{updated}"))
+    } else {
+        match serde_json::Number::from_f64(updated) {
+            Some(number) => Value::Number(number),
+            None => return,
+        }
+    };
 }
 
 fn replace_public_key(target: &str, outbound: &dsn::Dsn) -> String {
@@ -290,6 +371,7 @@ mod tests {
     use http_body_util::Full;
 
     use super::*;
+    use crate::config::SampleRateConfig;
     use crate::envelope;
 
     fn make_test_config() -> ConfigData {
@@ -525,7 +607,7 @@ mod tests {
         body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{}\n");
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &[], true);
+        let result = update_envelope(envelope, &outbound, &[], true, None);
 
         assert!(result.is_some());
         let envelope = result.unwrap();
@@ -541,7 +623,7 @@ mod tests {
         let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#, r#"{}"#];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &[], true);
+        let result = update_envelope(envelope, &outbound, &[], true, None);
 
         assert!(result.is_some());
         let updated = result.expect("should be some");
@@ -564,7 +646,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &[], false);
+        let result = update_envelope(envelope, &outbound, &[], false, None);
 
         assert!(result.is_some());
         let updated = result.expect("should be updated");
@@ -590,7 +672,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("should parse");
-        let result = update_envelope(envelope, &outbound, &[], false);
+        let result = update_envelope(envelope, &outbound, &[], false, None);
 
         assert!(result.is_some());
 
@@ -618,7 +700,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("should parse");
-        let result = update_envelope(envelope, &outbound, &[], false);
+        let result = update_envelope(envelope, &outbound, &[], false, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -777,7 +859,7 @@ mod tests {
 
         let categories: Vec<String> = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, false);
+        let result = update_envelope(envelope, &outbound, &categories, false, None);
 
         assert!(result.is_some(), "Should return Some for valid input");
         let updated = result.unwrap();
@@ -808,7 +890,7 @@ mod tests {
 
         let categories = vec!["event".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, false);
+        let result = update_envelope(envelope, &outbound, &categories, false, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -833,7 +915,7 @@ mod tests {
 
         let categories = vec!["transaction".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, false);
+        let result = update_envelope(envelope, &outbound, &categories, false, None);
         assert!(
             result.is_none(),
             "all items filtered, envelope is not needed"
@@ -853,7 +935,7 @@ mod tests {
 
         let categories = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true);
+        let result = update_envelope(envelope, &outbound, &categories, true, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -882,7 +964,7 @@ mod tests {
 
         let categories = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true);
+        let result = update_envelope(envelope, &outbound, &categories, true, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -921,7 +1003,7 @@ mod tests {
 
         let categories = vec!["attachment".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, false);
+        let result = update_envelope(envelope, &outbound, &categories, false, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -949,7 +1031,7 @@ mod tests {
 
         let categories: Vec<String> = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true);
+        let result = update_envelope(envelope, &outbound, &categories, true, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -990,7 +1072,7 @@ mod tests {
 
         let categories = vec!["attachment".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true);
+        let result = update_envelope(envelope, &outbound, &categories, true, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1019,7 +1101,7 @@ mod tests {
 
         let categories = vec!["attachment".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true);
+        let result = update_envelope(envelope, &outbound, &categories, true, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1050,7 +1132,7 @@ mod tests {
 
         let categories = vec!["event".to_string()];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true);
+        let result = update_envelope(envelope, &outbound, &categories, true, None);
         assert!(result.is_some());
 
         let updated = result.unwrap();
@@ -1084,7 +1166,7 @@ mod tests {
 
         let categories = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true);
+        let result = update_envelope(envelope, &outbound, &categories, true, None);
         assert!(result.is_some());
         let updated = result.unwrap();
         assert_eq!(updated.items.len(), 2);
@@ -1123,7 +1205,7 @@ mod tests {
 
         let categories = vec![];
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, &categories, true);
+        let result = update_envelope(envelope, &outbound, &categories, true, None);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1132,5 +1214,284 @@ mod tests {
             *updated.header.get("event_id").unwrap() != Value::String("original-id".to_string()),
             "event id should be changed"
         );
+    }
+
+    fn uniform_rates(rate: f64) -> SampleRates {
+        let mut problems = Vec::new();
+        sampling::normalize(&SampleRateConfig::Uniform(rate), &mut problems)
+    }
+
+    fn category_rates(rates: &[(&str, f64)]) -> SampleRates {
+        let mut problems = Vec::new();
+        let config = SampleRateConfig::PerCategory(
+            rates
+                .iter()
+                .map(|(category, rate)| (category.to_string(), *rate))
+                .collect(),
+        );
+
+        sampling::normalize(&config, &mut problems)
+    }
+
+    /// An envelope with a single item of `item_type`.
+    fn sampling_envelope(item_type: &str) -> Envelope {
+        let body = string_list_to_bytes(vec![
+            r#"{"dsn":"https://deadbeef@ingest.sentry.io/123"}"#,
+            &format!(r#"{{"type":"{item_type}","length":4}}"#),
+            "test",
+        ]);
+
+        envelope::parse(&body).expect("body should parse")
+    }
+
+    fn test_dsn() -> dsn::Dsn {
+        "https://outbound@o789.ingest.sentry.io/6789"
+            .parse()
+            .unwrap()
+    }
+
+    #[test]
+    fn test_update_envelope_sample_rate_zero_drops() {
+        let result = update_envelope(
+            sampling_envelope("error"),
+            &test_dsn(),
+            &[],
+            false,
+            Some(&category_rates(&[("error", 0.0)])),
+        );
+
+        assert!(result.is_none(), "a 0.0 rate should drop the envelope");
+    }
+
+    #[test]
+    fn test_update_envelope_sample_rate_one_keeps() {
+        let result = update_envelope(
+            sampling_envelope("error"),
+            &test_dsn(),
+            &[],
+            false,
+            Some(&category_rates(&[("error", 1.0)])),
+        );
+
+        assert!(result.is_some(), "a 1.0 rate should keep the envelope");
+    }
+
+    #[test]
+    fn test_update_envelope_sample_rate_unlisted_category_kept() {
+        let result = update_envelope(
+            sampling_envelope("error"),
+            &test_dsn(),
+            &[],
+            false,
+            Some(&category_rates(&[("span", 0.0)])),
+        );
+
+        assert!(
+            result.is_some(),
+            "categories without a rate should not be sampled"
+        );
+    }
+
+    #[test]
+    fn test_update_envelope_sample_rate_uniform_zero_drops() {
+        let result = update_envelope(
+            sampling_envelope("transaction"),
+            &test_dsn(),
+            &[],
+            false,
+            Some(&uniform_rates(0.0)),
+        );
+
+        assert!(result.is_none(), "uniform rates apply to every category");
+    }
+
+    /// The sampling decision is made per envelope using the primary item, so
+    /// that an attachment is never separated from the event it belongs to.
+    #[test]
+    fn test_update_envelope_sample_rate_uses_primary_item() {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"dsn\":\"value\"}\n");
+        body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
+        body.extend_from_slice(b"hello");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+
+        // The leading attachment does not drive the decision.
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(
+            envelope,
+            &test_dsn(),
+            &[],
+            false,
+            Some(&category_rates(&[("attachment", 0.0)])),
+        );
+        assert!(
+            result.is_some(),
+            "attachments should not make the decision for the envelope"
+        );
+
+        // Dropping the event takes its attachment along with it.
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(
+            envelope,
+            &test_dsn(),
+            &[],
+            false,
+            Some(&category_rates(&[("event", 0.0)])),
+        );
+        assert!(
+            result.is_none(),
+            "the whole envelope is dropped, including attachments"
+        );
+    }
+
+    #[test]
+    fn test_update_envelope_sample_rate_applied_after_category_filter() {
+        let mut body = Vec::new();
+        body.extend_from_slice(b"{\"dsn\":\"value\"}\n");
+        body.extend_from_slice(b"{\"type\":\"attachment\",\"length\":5}\n");
+        body.extend_from_slice(b"hello");
+        body.push(b'\n');
+        body.extend_from_slice(b"{\"type\":\"event\",\"length\":4}\n");
+        body.extend_from_slice(b"test");
+
+        let envelope = envelope::parse(&body).expect("body should parse");
+        let result = update_envelope(
+            envelope,
+            &test_dsn(),
+            &["event".to_string()],
+            false,
+            Some(&category_rates(&[("attachment", 0.0)])),
+        );
+
+        assert!(
+            result.is_some(),
+            "the attachment is filtered out before sampling decides"
+        );
+    }
+
+    /// Sentry sends the dynamic sampling context as strings so that it can
+    /// survive a trip through the baggage header.
+    #[test]
+    fn test_scale_trace_sample_rate_string() {
+        let mut header =
+            serde_json::json!({"trace": {"public_key": "abcdef", "sample_rate": "0.5"}});
+        scale_trace_sample_rate(&mut header, 0.5);
+
+        assert_eq!(
+            header["trace"]["sample_rate"],
+            Value::String("0.25".to_string()),
+            "the rate should be multiplied and stay a string"
+        );
+    }
+
+    #[test]
+    fn test_scale_trace_sample_rate_numeric() {
+        let mut header = serde_json::json!({"trace": {"public_key": "abcdef", "sample_rate": 0.5}});
+        scale_trace_sample_rate(&mut header, 0.5);
+
+        assert_eq!(
+            header["trace"]["sample_rate"],
+            serde_json::json!(0.25),
+            "numeric rates should stay numeric"
+        );
+    }
+
+    #[test]
+    fn test_scale_trace_sample_rate_not_scaled_at_one() {
+        let mut header =
+            serde_json::json!({"trace": {"public_key": "abcdef", "sample_rate": "0.5"}});
+        scale_trace_sample_rate(&mut header, 1.0);
+
+        assert_eq!(
+            header["trace"]["sample_rate"],
+            Value::String("0.5".to_string()),
+            "an unsampled rate should not reformat the value"
+        );
+    }
+
+    #[test]
+    fn test_scale_trace_sample_rate_no_trace_header() {
+        let mut header = serde_json::json!({"event_id": "abcdef"});
+        scale_trace_sample_rate(&mut header, 0.5);
+
+        assert!(
+            header.get("trace").is_none(),
+            "a trace header should not be invented"
+        );
+    }
+
+    #[test]
+    fn test_scale_trace_sample_rate_missing_field() {
+        let mut header = serde_json::json!({"trace": {"public_key": "abcdef"}});
+        scale_trace_sample_rate(&mut header, 0.5);
+
+        assert!(
+            header["trace"].get("sample_rate").is_none(),
+            "a sample rate should not be added when the client did not send one"
+        );
+    }
+
+    #[test]
+    fn test_scale_trace_sample_rate_unparseable() {
+        let mut header =
+            serde_json::json!({"trace": {"public_key": "abcdef", "sample_rate": "bogus"}});
+        scale_trace_sample_rate(&mut header, 0.5);
+
+        assert_eq!(
+            header["trace"]["sample_rate"],
+            Value::String("bogus".to_string()),
+            "unparseable rates should be left alone"
+        );
+    }
+
+    /// Every envelope that survives sampling should carry the scaled rate.
+    #[test]
+    fn test_update_envelope_scales_trace_sample_rate() {
+        let body = string_list_to_bytes(vec![
+            r#"{"trace":{"public_key":"abcdef","sample_rate":"1.0"}}"#,
+            r#"{"type":"transaction","length":4}"#,
+            "test",
+        ]);
+        let rates = uniform_rates(0.5);
+
+        let mut kept = 0;
+        for _ in 0..50 {
+            let envelope = envelope::parse(&body).expect("body should parse");
+            let Some(updated) = update_envelope(envelope, &test_dsn(), &[], false, Some(&rates))
+            else {
+                continue;
+            };
+            kept += 1;
+            assert_eq!(
+                updated.header["trace"]["sample_rate"],
+                Value::String("0.5".to_string()),
+                "kept envelopes should report the mirrored rate"
+            );
+        }
+
+        assert!(kept > 0, "a 0.5 rate should keep some envelopes");
+    }
+
+    #[test]
+    fn test_update_envelope_sample_rate_half_is_probabilistic() {
+        let rates = uniform_rates(0.5);
+        let mut kept = 0;
+        for _ in 0..200 {
+            let result = update_envelope(
+                sampling_envelope("error"),
+                &test_dsn(),
+                &[],
+                false,
+                Some(&rates),
+            );
+            if result.is_some() {
+                kept += 1;
+            }
+        }
+
+        assert!(kept > 0, "a 0.5 rate should keep some envelopes");
+        assert!(kept < 200, "a 0.5 rate should drop some envelopes");
     }
 }

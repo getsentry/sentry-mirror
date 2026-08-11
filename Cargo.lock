@@ -2058,6 +2058,7 @@ dependencies = [
  "metrics",
  "metrics-exporter-dogstatsd",
  "mimalloc",
+ "rand 0.9.4",
  "regex",
  "sentry",
  "serde",
