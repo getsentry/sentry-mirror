@@ -87,7 +87,7 @@ jobs:
         uses: google-github-actions/auth@v3
         with:
           workload_identity_provider: projects/868781662168/locations/global/workloadIdentityPools/prod-github/providers/github-oidc-pool
-          service_account: gha-gcr-push@sac-prod-sa.iam.gserviceaccount.com
+          service_account: gha-sentry-mirror-push@sac-prod-sa.iam.gserviceaccount.com
 
       - name: "Set up Cloud SDK"
         uses: "google-github-actions/setup-gcloud@v3"
