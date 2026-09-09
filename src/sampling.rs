@@ -1,6 +1,9 @@
 use rand::Rng;
+use rand::distr::StandardUniform;
+use rand_pcg::Pcg32;
 use std::collections::BTreeMap;
 use std::fmt;
+use uuid::Uuid;
 
 use crate::config::SampleRateConfig;
 
@@ -113,9 +116,11 @@ fn clamp_rate(category: Option<&str>, rate: f64, problems: &mut Vec<String>) -> 
 /// over many envelopes, and per-envelope randomness would leave partial
 /// traces behind. Without a trace id the decision is random.
 ///
-/// The seed deliberately differs from Relay's, which feeds the trace id into
-/// a PCG generator. Sharing its seed would correlate the two decisions and
-/// turn the combined rate into `min(mirror, relay)` instead of their product.
+/// The function is the same one Relay uses for trace sampling, so the mirror
+/// and a downstream Relay agree on which traces to keep. A trace the mirror
+/// keeps at `rate` is exactly a trace Relay would keep at `rate`, and a Relay
+/// rule at a higher rate keeps everything the mirror sends. The two decisions
+/// nest, so the combined rate is the lower of the two, not their product.
 pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
     if rate >= 1.0 {
         return true;
@@ -124,45 +129,30 @@ pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
         return false;
     }
 
-    let draw = match trace_id {
+    let draw = match trace_id.and_then(|id| Uuid::parse_str(id).ok()) {
         Some(trace_id) => uniform_from_trace_id(trace_id),
         None => rand::rng().random::<f64>(),
     };
 
-    rate > draw
+    draw < rate
 }
 
-const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
-const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
-const SEED_SALT: &[u8] = b"sentry-mirror:";
-
-/// Map a trace id onto `[0, 1)` with salted FNV-1a and a MurmurHash3
-/// finalizer.
+/// Map a trace id onto `[0, 1)` the way Relay does.
 ///
-/// The hash is implemented here so that the mapping stays fixed across Rust
-/// and dependency upgrades; every mirror instance must agree on the same
-/// traces. FNV alone barely moves the high bits for a change in the last
-/// bytes, so the finalizer spreads every input bit over the whole word.
-fn uniform_from_trace_id(trace_id: &str) -> f64 {
-    let mut hash = FNV_OFFSET;
-    for byte in SEED_SALT.iter().chain(trace_id.as_bytes()) {
-        hash ^= u64::from(*byte);
-        hash = hash.wrapping_mul(FNV_PRIME);
-    }
-
-    hash ^= hash >> 33;
-    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
-    hash ^= hash >> 33;
-    hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
-    hash ^= hash >> 33;
-
-    // The top 53 bits fill a double's mantissa exactly.
-    (hash >> 11) as f64 / (1u64 << 53) as f64
+/// Relay seeds a PCG32 generator with the two halves of the id and takes the
+/// first `f64` it produces. Any change here changes which traces the mirror
+/// keeps, and breaks the agreement with Relay.
+fn uniform_from_trace_id(trace_id: Uuid) -> f64 {
+    let seed = trace_id.as_u128();
+    let mut generator = Pcg32::new((seed >> 64) as u64, seed as u64);
+    generator.sample(StandardUniform)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PINNED_DRAW: f64 = 0.084458025231689;
 
     fn per_category(rates: &[(&str, f64)]) -> SampleRateConfig {
         SampleRateConfig::PerCategory(
@@ -308,13 +298,34 @@ mod tests {
         assert!((2200..2800).contains(&kept), "kept {kept} of 10000 at 0.25");
     }
 
+    /// Pin the mapping to the value Relay computes. A change here changes
+    /// which traces every mirror keeps and breaks the agreement with Relay.
     #[test]
-    fn test_uniform_from_trace_id_is_stable() {
-        // Pin the mapping: a change here changes which traces every mirror keeps.
-        assert_eq!(
-            uniform_from_trace_id("771a43a4192642f0b136d5159a501700"),
-            0.9823153496354838
-        );
+    fn test_uniform_from_trace_id_matches_relay() {
+        let trace_id = Uuid::parse_str("771a43a4192642f0b136d5159a501700").unwrap();
+        assert_eq!(uniform_from_trace_id(trace_id), PINNED_DRAW);
+    }
+
+    /// SDKs send trace ids as 32 hex characters; Relay accepts the
+    /// hyphenated form as well. Both must map to the same decision.
+    #[test]
+    fn test_keep_accepts_hyphenated_trace_id() {
+        let simple = "771a43a4192642f0b136d5159a501700";
+        let hyphenated = "771a43a4-1926-42f0-b136-d5159a501700";
+        for rate in [0.1, 0.5, 0.9, 0.99] {
+            assert_eq!(keep(rate, Some(simple)), keep(rate, Some(hyphenated)));
+        }
+    }
+
+    /// A trace id Relay cannot parse gets no trace-level decision there, so
+    /// the mirror falls back to a random one instead of a fixed one.
+    #[test]
+    fn test_keep_invalid_trace_id_is_random() {
+        let kept = (0..1000)
+            .filter(|_| keep(0.5, Some("not-a-trace-id")))
+            .count();
+
+        assert!((400..600).contains(&kept), "kept {kept} of 1000 at 0.5");
     }
 
     #[test]

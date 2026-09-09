@@ -489,14 +489,20 @@ def test_mirror_multiplies_envelopes(multiplier_mirror_process, stub_servers):
     # Normalize event_ids and compare parsed structures
     normalized_server1 = normalize_event_ids((server1_header, server1_item_header, server1_payload))
 
-    for i, parsed in enumerate(server2_parsed):
+    # The rewritten payload is serialized again, so its length differs from
+    # the fixture. The length header must follow the payload it describes.
+    server1_item_header = without_length(normalized_server1[1])
+    for i, (parsed, request) in enumerate(zip(server2_parsed, server2_requests)):
         normalized_server2 = normalize_event_ids(parsed)
 
         # Compare each component
         assert normalized_server2[0] == normalized_server1[0], \
             f"Server2 request {i} header should match server1 after normalization"
-        assert normalized_server2[1] == normalized_server1[1], \
+        assert without_length(normalized_server2[1]) == server1_item_header, \
             f"Server2 request {i} item header should match server1"
+        raw_payload = request["body"].strip().split("\n", 2)[2]
+        assert normalized_server2[1]["length"] == len(raw_payload.encode()), \
+            f"Server2 request {i} length header should match the rewritten payload"
         assert normalized_server2[2] == normalized_server1[2], \
             f"Server2 request {i} payload should match server1 after event_id normalization"
 
@@ -587,6 +593,10 @@ def parse_envelope(envelope_body: str) -> tuple[dict, dict, dict]:
     item_header = json.loads(lines[1])
     payload = json.loads(lines[2]) if len(lines) > 2 else {}
     return header, item_header, payload
+
+
+def without_length(item_header: dict) -> dict:
+    return {key: value for key, value in item_header.items() if key != "length"}
 
 
 def normalize_event_ids(parsed_envelope: tuple[dict, dict, dict]) -> tuple[dict, dict, dict]:
