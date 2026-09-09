@@ -134,7 +134,7 @@ pub fn update_envelope(
     {
         let category = primary_category(&envelope.items);
         let rate = rates.rate_for(category);
-        if !sampling::roll(rate) {
+        if !sampling::keep(rate, trace_id(&envelope.header)) {
             metrics::counter!(
                 "handle_proxy.outbound_request.sampled_out",
                 "outbound_host" => outbound_dsn.host.clone(),
@@ -196,6 +196,11 @@ fn primary_category(items: &[EnvelopeItem]) -> &str {
         .map(item_type)
         .find(|item_type| *item_type != "attachment")
         .unwrap_or_else(|| items.first().map(item_type).unwrap_or(""))
+}
+
+/// The trace id from the dynamic sampling context of an envelope header.
+fn trace_id(header: &Value) -> Option<&str> {
+    header.get("trace")?.get("trace_id")?.as_str()
 }
 
 /// Multiply the `trace.sample_rate` envelope header by the rate that mirror
@@ -1316,6 +1321,40 @@ mod tests {
         assert!(
             result.is_none(),
             "the whole envelope is dropped, including attachments"
+        );
+    }
+
+    /// Streaming SDKs send one trace as many envelopes. Every envelope of a
+    /// trace must get the same decision or traces arrive with holes.
+    #[test]
+    fn test_update_envelope_sample_rate_keeps_traces_whole() {
+        fn span_envelope(trace_id: &str) -> Envelope {
+            let body = string_list_to_bytes(vec![
+                &format!(
+                    r#"{{"dsn":"https://deadbeef@ingest.sentry.io/123","trace":{{"trace_id":"{trace_id}","public_key":"deadbeef"}}}}"#
+                ),
+                r#"{"type":"span","length":4}"#,
+                "test",
+            ]);
+
+            envelope::parse(&body).expect("body should parse")
+        }
+
+        let outbound = sampled_entry(category_rates(&[("span", 0.5)]));
+        let mut kept = 0;
+        for i in 0..200 {
+            let trace_id = format!("{i:032x}");
+            let first = update_envelope(span_envelope(&trace_id), &outbound, false).is_some();
+            for _ in 0..5 {
+                let again = update_envelope(span_envelope(&trace_id), &outbound, false).is_some();
+                assert_eq!(again, first, "trace {trace_id} got a different decision");
+            }
+            kept += usize::from(first);
+        }
+
+        assert!(
+            (60..140).contains(&kept),
+            "kept {kept} of 200 traces at 0.5"
         );
     }
 

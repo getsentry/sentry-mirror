@@ -3,6 +3,7 @@ import logging
 import socket
 import subprocess
 import time
+from collections import Counter
 from pathlib import Path
 from typing import Any, TypedDict
 
@@ -214,10 +215,16 @@ def read_logs(log_path: str) -> list[dict[str, Any]]:
     return requests
 
 
-def send_envelope_to_mirror(fixture_path: Path):
-    """Send an envelope from a fixture file to the mirror."""
+def send_envelope_to_mirror(fixture_path: Path, replace: dict[str, str] | None = None):
+    """Send an envelope from a fixture file to the mirror.
+
+    `replace` maps substrings of the fixture to their replacements, so that
+    one fixture can stand in for many envelopes.
+    """
     with open(fixture_path, 'r') as f:
         envelope_data = f.read()
+    for old, new in (replace or {}).items():
+        envelope_data = envelope_data.replace(old, new)
 
     # The inbound DSN from integration-test.yaml (must be 32 hex chars)
     mirror_url = "http://localhost:3001/api/456/envelope/"
@@ -525,18 +532,23 @@ def test_mirror_samples_envelopes(sampling_mirror_process, stub_servers):
         "The error should have been sampled out"
 
 
-def test_mirror_recalculates_trace_sample_rate(sampling_trace_mirror_process, stub_servers):
+def test_mirror_samples_whole_traces(sampling_trace_mirror_process, stub_servers):
     """
-    Test that trace.sample_rate reflects the mirror sampling that was applied.
+    Test that sampling keeps traces whole and rewrites trace.sample_rate.
 
-    server_one samples at 0.5, so the envelopes it does receive should report
-    1.0 * 0.5. server_two is unsampled and keeps the original rate.
+    server_one samples at 0.5. Each trace is sent twice, and both envelopes of
+    a trace must get the same decision. The envelopes it does receive should
+    report 1.0 * 0.5. server_two is unsampled and keeps the original rate.
     """
     fixture_path = Path(__file__).parent / "fixtures" / "transaction-dsc.txt"
-    attempts = 20
-    for _ in range(attempts):
-        response = send_envelope_to_mirror(fixture_path)
-        assert response.status_code == 200, f"Mirror returned {response.status_code}"
+    fixture_trace_id = "6cf173d587eb48568a9b2e12dcfbea52"
+    trace_ids = [f"{i:032x}" for i in range(20)]
+    for trace_id in trace_ids:
+        for _ in range(2):
+            response = send_envelope_to_mirror(
+                fixture_path, replace={fixture_trace_id: trace_id}
+            )
+            assert response.status_code == 200, f"Mirror returned {response.status_code}"
 
     # Give the mirror time to forward requests
     time.sleep(1)
@@ -545,10 +557,16 @@ def test_mirror_recalculates_trace_sample_rate(sampling_trace_mirror_process, st
     server1_requests = read_logs(server_one["logfile"])
     server2_requests = read_logs(server_two["logfile"])
 
-    # Sampling at 0.5 over 20 attempts, the odds of receiving nothing are 2^-20
-    assert len(server1_requests) > 0, "Server 1 should receive some envelopes"
-    assert len(server1_requests) < attempts, "Server 1 should not receive every envelope"
-    assert len(server2_requests) == attempts, \
+    received = Counter(
+        parse_envelope(request["body"])[0]["trace"]["trace_id"]
+        for request in server1_requests
+    )
+    assert all(count == 2 for count in received.values()), \
+        f"Both envelopes of a trace should share one decision, got {received}"
+    # Sampling at 0.5 over 20 traces, the odds of all or none are 2^-19
+    assert 0 < len(received) < len(trace_ids), \
+        f"Server 1 should receive some traces but not all, got {len(received)}"
+    assert len(server2_requests) == 2 * len(trace_ids), \
         f"Server 2 should receive every envelope, got {len(server2_requests)}"
 
     for request in server1_requests:

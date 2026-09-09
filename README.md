@@ -78,6 +78,13 @@ dropped whole, so attachments are never separated from the event they belong to.
 Requests that are not envelopes, such as minidumps, use the rate that applies to
 all categories, and are not sampled when only per-category rates are configured.
 
+When the envelope header carries a `trace.trace_id`, the decision is derived
+from that id, so every envelope of a trace is kept or dropped together. SDKs
+that stream spans send one trace as many envelopes, and this keeps those traces
+whole. Envelopes without a trace id are sampled at random. The mirror uses its
+own hash of the trace id, not Relay's, so that a Relay sampling rule applied
+downstream multiplies with the mirror rate instead of overlapping with it.
+
 :warning: Combining `multiplier` and `sample_rate` is a configuration error.
 The mirror logs an error during startup and ignores the `multiplier` value.
 

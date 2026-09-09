@@ -106,8 +106,17 @@ fn clamp_rate(category: Option<&str>, rate: f64, problems: &mut Vec<String>) -> 
     rate
 }
 
-/// Draw against the thread local rng to decide if an item is kept.
-pub fn roll(rate: f64) -> bool {
+/// Decide whether a payload is kept at `rate`.
+///
+/// When the trace id is known the decision is a pure function of it, so all
+/// envelopes of one trace get the same answer. Streaming SDKs spread a trace
+/// over many envelopes, and per-envelope randomness would leave partial
+/// traces behind. Without a trace id the decision is random.
+///
+/// The seed deliberately differs from Relay's, which feeds the trace id into
+/// a PCG generator. Sharing its seed would correlate the two decisions and
+/// turn the combined rate into `min(mirror, relay)` instead of their product.
+pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
     if rate >= 1.0 {
         return true;
     }
@@ -115,7 +124,40 @@ pub fn roll(rate: f64) -> bool {
         return false;
     }
 
-    rate > rand::rng().random::<f64>()
+    let draw = match trace_id {
+        Some(trace_id) => uniform_from_trace_id(trace_id),
+        None => rand::rng().random::<f64>(),
+    };
+
+    rate > draw
+}
+
+const FNV_OFFSET: u64 = 0xcbf2_9ce4_8422_2325;
+const FNV_PRIME: u64 = 0x0000_0100_0000_01b3;
+const SEED_SALT: &[u8] = b"sentry-mirror:";
+
+/// Map a trace id onto `[0, 1)` with salted FNV-1a and a MurmurHash3
+/// finalizer.
+///
+/// The hash is implemented here so that the mapping stays fixed across Rust
+/// and dependency upgrades; every mirror instance must agree on the same
+/// traces. FNV alone barely moves the high bits for a change in the last
+/// bytes, so the finalizer spreads every input bit over the whole word.
+fn uniform_from_trace_id(trace_id: &str) -> f64 {
+    let mut hash = FNV_OFFSET;
+    for byte in SEED_SALT.iter().chain(trace_id.as_bytes()) {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(FNV_PRIME);
+    }
+
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xff51_afd7_ed55_8ccd);
+    hash ^= hash >> 33;
+    hash = hash.wrapping_mul(0xc4ce_b9fe_1a85_ec53);
+    hash ^= hash >> 33;
+
+    // The top 53 bits fill a double's mantissa exactly.
+    (hash >> 11) as f64 / (1u64 << 53) as f64
 }
 
 #[cfg(test)]
@@ -219,11 +261,60 @@ mod tests {
     }
 
     #[test]
-    fn test_roll_deterministic_extremes() {
-        for _ in 0..100 {
-            assert!(roll(1.0));
-            assert!(!roll(0.0));
+    fn test_keep_extremes() {
+        for i in 0..100 {
+            let trace_id = format!("{i:032x}");
+            assert!(keep(1.0, None));
+            assert!(!keep(0.0, None));
+            assert!(keep(1.0, Some(&trace_id)));
+            assert!(!keep(0.0, Some(&trace_id)));
         }
+    }
+
+    #[test]
+    fn test_keep_same_trace_same_decision() {
+        let trace_id = "771a43a4192642f0b136d5159a501700";
+        let first = keep(0.5, Some(trace_id));
+        for _ in 0..100 {
+            assert_eq!(keep(0.5, Some(trace_id)), first);
+        }
+    }
+
+    #[test]
+    fn test_keep_is_monotonic_in_rate() {
+        for i in 0..1000 {
+            let trace_id = format!("{i:032x}");
+            if keep(0.1, Some(&trace_id)) {
+                assert!(keep(0.5, Some(&trace_id)), "raising the rate keeps a trace");
+            }
+            if !keep(0.5, Some(&trace_id)) {
+                assert!(
+                    !keep(0.1, Some(&trace_id)),
+                    "lowering the rate drops a trace"
+                );
+            }
+        }
+    }
+
+    /// Sequential ids differ only in their last bytes, which is the hardest
+    /// input for a byte-wise hash to spread evenly.
+    #[test]
+    fn test_keep_trace_ids_spread_over_rate() {
+        let kept = (0..10_000)
+            .map(|i| format!("{i:032x}"))
+            .filter(|trace_id| keep(0.25, Some(trace_id)))
+            .count();
+
+        assert!((2200..2800).contains(&kept), "kept {kept} of 10000 at 0.25");
+    }
+
+    #[test]
+    fn test_uniform_from_trace_id_is_stable() {
+        // Pin the mapping: a change here changes which traces every mirror keeps.
+        assert_eq!(
+            uniform_from_trace_id("771a43a4192642f0b136d5159a501700"),
+            0.9823153496354838
+        );
     }
 
     #[test]
