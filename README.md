@@ -88,10 +88,10 @@ keeps exactly the traces a Relay rule at the same rate would keep, and a Relay
 rule downstream at a higher rate keeps everything the mirror sends. The two
 decisions nest, so the combined rate is the lower of the two, not their product.
 
-The mirror multiplies the client sample rates it forwards by its own rate, both
-`trace.sample_rate` in the envelope header and `sentry.client_sample_rate` on
-spans. Sentry then extrapolates mirrored data as if the SDK had sampled at the
-combined rate. This is exact when the receiving project does not also sample on
+The mirror multiplies `trace.sample_rate` in the envelope header by its own
+rate. Relay reads the client sample rate from that header for transactions and
+spans alike, so Sentry extrapolates mirrored data as if the SDK had sampled at
+the combined rate. This is exact when the receiving project does not also sample on
 the server. A server rule below 1.0 overlaps with the mirror decision, and
 Sentry counts its rate a second time.
 
@@ -105,7 +105,7 @@ When events are mirrored to outbound DSNs the following modifications may be mad
 1. `sentry_key` component of `Authorization` and `X-Sentry-Auth` headers will be replaced.
 2. `dsn` in envelope headers will be replaced.
 3. `trace.public_key` in envelope headers will be replaced.
-4. `trace.sample_rate` in envelope headers and `sentry.client_sample_rate` on spans are multiplied by `sample_rate` when it is defined on the DSN configuration.
+4. `trace.sample_rate` in envelope headers is multiplied by `sample_rate` when it is defined on the DSN configuration.
 5. Content-Length, Content-Encoding, Host, X-Forwarded-For headers will be removed.
 
 sentry-mirror will send outbound requests concurrently and respond with the response 
