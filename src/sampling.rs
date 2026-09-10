@@ -1,6 +1,9 @@
 use rand::Rng;
+use rand::distr::StandardUniform;
+use rand_pcg::Pcg32;
 use std::collections::BTreeMap;
 use std::fmt;
+use uuid::Uuid;
 
 use crate::config::SampleRateConfig;
 
@@ -106,8 +109,19 @@ fn clamp_rate(category: Option<&str>, rate: f64, problems: &mut Vec<String>) -> 
     rate
 }
 
-/// Draw against the thread local rng to decide if an item is kept.
-pub fn roll(rate: f64) -> bool {
+/// Decide whether a payload is kept at `rate`.
+///
+/// When the trace id is known the decision is a pure function of it, so all
+/// envelopes of one trace get the same answer. Streaming SDKs spread a trace
+/// over many envelopes, and per-envelope randomness would leave partial
+/// traces behind. Without a trace id the decision is random.
+///
+/// The function is the same one Relay uses for trace sampling, so the mirror
+/// and a downstream Relay agree on which traces to keep. A trace the mirror
+/// keeps at `rate` is exactly a trace Relay would keep at `rate`, and a Relay
+/// rule at a higher rate keeps everything the mirror sends. The two decisions
+/// nest, so the combined rate is the lower of the two, not their product.
+pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
     if rate >= 1.0 {
         return true;
     }
@@ -115,12 +129,30 @@ pub fn roll(rate: f64) -> bool {
         return false;
     }
 
-    rate > rand::rng().random::<f64>()
+    let draw = match trace_id.and_then(|id| Uuid::parse_str(id).ok()) {
+        Some(trace_id) => uniform_from_trace_id(trace_id),
+        None => rand::rng().random::<f64>(),
+    };
+
+    draw < rate
+}
+
+/// Map a trace id onto `[0, 1)` the way Relay does.
+///
+/// Relay seeds a PCG32 generator with the two halves of the id and takes the
+/// first `f64` it produces. Any change here changes which traces the mirror
+/// keeps, and breaks the agreement with Relay.
+fn uniform_from_trace_id(trace_id: Uuid) -> f64 {
+    let seed = trace_id.as_u128();
+    let mut generator = Pcg32::new((seed >> 64) as u64, seed as u64);
+    generator.sample(StandardUniform)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const PINNED_DRAW: f64 = 0.084458025231689;
 
     fn per_category(rates: &[(&str, f64)]) -> SampleRateConfig {
         SampleRateConfig::PerCategory(
@@ -219,11 +251,81 @@ mod tests {
     }
 
     #[test]
-    fn test_roll_deterministic_extremes() {
-        for _ in 0..100 {
-            assert!(roll(1.0));
-            assert!(!roll(0.0));
+    fn test_keep_extremes() {
+        for i in 0..100 {
+            let trace_id = format!("{i:032x}");
+            assert!(keep(1.0, None));
+            assert!(!keep(0.0, None));
+            assert!(keep(1.0, Some(&trace_id)));
+            assert!(!keep(0.0, Some(&trace_id)));
         }
+    }
+
+    #[test]
+    fn test_keep_same_trace_same_decision() {
+        let trace_id = "771a43a4192642f0b136d5159a501700";
+        let first = keep(0.5, Some(trace_id));
+        for _ in 0..100 {
+            assert_eq!(keep(0.5, Some(trace_id)), first);
+        }
+    }
+
+    #[test]
+    fn test_keep_is_monotonic_in_rate() {
+        for i in 0..1000 {
+            let trace_id = format!("{i:032x}");
+            if keep(0.1, Some(&trace_id)) {
+                assert!(keep(0.5, Some(&trace_id)), "raising the rate keeps a trace");
+            }
+            if !keep(0.5, Some(&trace_id)) {
+                assert!(
+                    !keep(0.1, Some(&trace_id)),
+                    "lowering the rate drops a trace"
+                );
+            }
+        }
+    }
+
+    /// Sequential ids differ only in their last bytes, which is the hardest
+    /// input for a byte-wise hash to spread evenly.
+    #[test]
+    fn test_keep_trace_ids_spread_over_rate() {
+        let kept = (0..10_000)
+            .map(|i| format!("{i:032x}"))
+            .filter(|trace_id| keep(0.25, Some(trace_id)))
+            .count();
+
+        assert!((2200..2800).contains(&kept), "kept {kept} of 10000 at 0.25");
+    }
+
+    /// Pin the mapping to the value Relay computes. A change here changes
+    /// which traces every mirror keeps and breaks the agreement with Relay.
+    #[test]
+    fn test_uniform_from_trace_id_matches_relay() {
+        let trace_id = Uuid::parse_str("771a43a4192642f0b136d5159a501700").unwrap();
+        assert_eq!(uniform_from_trace_id(trace_id), PINNED_DRAW);
+    }
+
+    /// SDKs send trace ids as 32 hex characters; Relay accepts the
+    /// hyphenated form as well. Both must map to the same decision.
+    #[test]
+    fn test_keep_accepts_hyphenated_trace_id() {
+        let simple = "771a43a4192642f0b136d5159a501700";
+        let hyphenated = "771a43a4-1926-42f0-b136-d5159a501700";
+        for rate in [0.1, 0.5, 0.9, 0.99] {
+            assert_eq!(keep(rate, Some(simple)), keep(rate, Some(hyphenated)));
+        }
+    }
+
+    /// A trace id Relay cannot parse gets no trace-level decision there, so
+    /// the mirror falls back to a random one instead of a fixed one.
+    #[test]
+    fn test_keep_invalid_trace_id_is_random() {
+        let kept = (0..1000)
+            .filter(|_| keep(0.5, Some("not-a-trace-id")))
+            .count();
+
+        assert!((400..600).contains(&kept), "kept {kept} of 1000 at 0.5");
     }
 
     #[test]

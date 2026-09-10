@@ -78,6 +78,23 @@ dropped whole, so attachments are never separated from the event they belong to.
 Requests that are not envelopes, such as minidumps, use the rate that applies to
 all categories, and are not sampled when only per-category rates are configured.
 
+When the envelope header carries a `trace.trace_id`, the decision is derived
+from that id, so every envelope of a trace is kept or dropped together. SDKs
+that stream spans send one trace as many envelopes, and this keeps those traces
+whole. Envelopes without a trace id are sampled at random.
+
+The mirror draws the number for a trace the same way Relay does. The mirror
+keeps exactly the traces a Relay rule at the same rate would keep, and a Relay
+rule downstream at a higher rate keeps everything the mirror sends. The two
+decisions nest, so the combined rate is the lower of the two, not their product.
+
+The mirror multiplies `trace.sample_rate` in the envelope header by its own
+rate. Relay reads the client sample rate from that header for transactions and
+spans alike, so Sentry extrapolates mirrored data as if the SDK had sampled at
+the combined rate. This is exact when the receiving project does not also sample on
+the server. A server rule below 1.0 overlaps with the mirror decision, and
+Sentry counts its rate a second time.
+
 :warning: Combining `multiplier` and `sample_rate` is a configuration error.
 The mirror logs an error during startup and ignores the `multiplier` value.
 
@@ -88,7 +105,7 @@ When events are mirrored to outbound DSNs the following modifications may be mad
 1. `sentry_key` component of `Authorization` and `X-Sentry-Auth` headers will be replaced.
 2. `dsn` in envelope headers will be replaced.
 3. `trace.public_key` in envelope headers will be replaced.
-4. `trace.sample_rate` is recalculated if `sample_rate` is defined on the DSN configuration.
+4. `trace.sample_rate` in envelope headers is multiplied by `sample_rate` when it is defined on the DSN configuration.
 5. Content-Length, Content-Encoding, Host, X-Forwarded-For headers will be removed.
 
 sentry-mirror will send outbound requests concurrently and respond with the response 

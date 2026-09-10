@@ -134,7 +134,7 @@ pub fn update_envelope(
     {
         let category = primary_category(&envelope.items);
         let rate = rates.rate_for(category);
-        if !sampling::roll(rate) {
+        if !sampling::keep(rate, trace_id(&envelope.header)) {
             metrics::counter!(
                 "handle_proxy.outbound_request.sampled_out",
                 "outbound_host" => outbound_dsn.host.clone(),
@@ -167,7 +167,7 @@ pub fn update_envelope(
                     } else {
                         Value::String(event_id.replace("-", "").clone())
                     };
-                    item.body = Bytes::from(serde_json::to_vec(&item_body).unwrap());
+                    set_item_body(&mut item, serde_json::to_vec(&item_body).unwrap());
                 }
                 item
             })
@@ -198,8 +198,25 @@ fn primary_category(items: &[EnvelopeItem]) -> &str {
         .unwrap_or_else(|| items.first().map(item_type).unwrap_or(""))
 }
 
+/// The trace id from the dynamic sampling context of an envelope header.
+fn trace_id(header: &Value) -> Option<&str> {
+    header.get("trace")?.get("trace_id")?.as_str()
+}
+
+/// Replace an item body and keep the `length` header truthful.
+fn set_item_body(item: &mut EnvelopeItem, body: Vec<u8>) {
+    if item.header.get("length").is_some() {
+        item.header["length"] = Value::from(body.len());
+    }
+    item.body = Bytes::from(body);
+}
+
 /// Multiply the `trace.sample_rate` envelope header by the rate that mirror
 /// sampling used, so that the header reflects the rate data arrived at.
+///
+/// This header is the one place Relay reads the client sample rate from.
+/// Transactions get it written into their trace context, and spans get it as
+/// the `sentry.client_sample_rate` attribute. The item bodies are not touched.
 ///
 /// Sentry serializes this value as a string so that it survives a trip through
 /// the `baggage` header, but numbers are handled as well. The value is written
@@ -1319,6 +1336,40 @@ mod tests {
         );
     }
 
+    /// Streaming SDKs send one trace as many envelopes. Every envelope of a
+    /// trace must get the same decision or traces arrive with holes.
+    #[test]
+    fn test_update_envelope_sample_rate_keeps_traces_whole() {
+        fn span_envelope(trace_id: &str) -> Envelope {
+            let body = string_list_to_bytes(vec![
+                &format!(
+                    r#"{{"dsn":"https://deadbeef@ingest.sentry.io/123","trace":{{"trace_id":"{trace_id}","public_key":"deadbeef"}}}}"#
+                ),
+                r#"{"type":"span","length":4}"#,
+                "test",
+            ]);
+
+            envelope::parse(&body).expect("body should parse")
+        }
+
+        let outbound = sampled_entry(category_rates(&[("span", 0.5)]));
+        let mut kept = 0;
+        for i in 0..200 {
+            let trace_id = format!("{i:032x}");
+            let first = update_envelope(span_envelope(&trace_id), &outbound, false).is_some();
+            for _ in 0..5 {
+                let again = update_envelope(span_envelope(&trace_id), &outbound, false).is_some();
+                assert_eq!(again, first, "trace {trace_id} got a different decision");
+            }
+            kept += usize::from(first);
+        }
+
+        assert!(
+            (60..140).contains(&kept),
+            "kept {kept} of 200 traces at 0.5"
+        );
+    }
+
     #[test]
     fn test_update_envelope_sample_rate_applied_after_category_filter() {
         let mut body = Vec::new();
@@ -1415,6 +1466,30 @@ mod tests {
             Value::String("bogus".to_string()),
             "unparseable rates should be left alone"
         );
+    }
+
+    /// Relay derives the span client sample rate from the envelope header,
+    /// so span bodies are forwarded untouched.
+    #[test]
+    fn test_update_envelope_leaves_span_bodies_alone() {
+        let span_body =
+            r#"{"items":[{"trace_id":"771a43a4192642f0b136d5159a501700","attributes":{}}]}"#;
+        let body = string_list_to_bytes(vec![
+            r#"{"dsn":"https://deadbeef@ingest.sentry.io/123","trace":{"trace_id":"771a43a4192642f0b136d5159a501700","public_key":"deadbeef","sample_rate":"1.0"}}"#,
+            &format!(r#"{{"type":"span","length":{}}}"#, span_body.len()),
+            span_body,
+        ]);
+        let envelope = envelope::parse(&body).expect("body should parse");
+
+        // This trace draws 0.0845 in Relay's generator, so 0.5 keeps it.
+        let updated = update_envelope(envelope, &sampled_entry(uniform_rates(0.5)), false)
+            .expect("the trace should be kept at 0.5");
+
+        assert_eq!(
+            updated.header["trace"]["sample_rate"],
+            Value::String("0.5".to_string())
+        );
+        assert_eq!(updated.items[0].body, Bytes::from(span_body));
     }
 
     /// Every envelope that survives sampling should carry the scaled rate.
