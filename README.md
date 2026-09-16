@@ -87,7 +87,7 @@ When events are mirrored to outbound DSNs the following modifications may be mad
 
 1. `sentry_key` component of `Authorization` and `X-Sentry-Auth` headers will be replaced.
 2. `dsn` in envelope headers will be replaced.
-3. `trace.public_key` in envelope headers will be replaced.
+3. `trace.public_key` in envelope headers will be replaced only when it matches the configured inbound key. Trace roots from other projects retain their public key so downstream sampling can use the original root project.
 4. `trace.sample_rate` is recalculated if `sample_rate` is defined on the DSN configuration.
 5. Content-Length, Content-Encoding, Host, X-Forwarded-For headers will be removed.
 

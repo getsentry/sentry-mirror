@@ -153,7 +153,8 @@ where
                 let cloned = envelope.clone().unwrap();
 
                 // Generate a new body for the request if modifying envelopes is enabled.
-                match request::update_envelope(cloned, outbound, i > 0) {
+                match request::update_envelope(cloned, &keyring.inbound.public_key, outbound, i > 0)
+                {
                     Some(envelope) => envelope.to_bytes(),
                     None => {
                         // Skip sending out requests for those that didn't yield an envelope
