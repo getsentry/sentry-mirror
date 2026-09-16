@@ -148,7 +148,7 @@ pub fn update_envelope(
 
             return None;
         }
-        scale_trace_sample_rate(&mut envelope.header, rate);
+        stamp_sample_rate(&mut envelope, rate);
     }
 
     // Replace event ids when the envelope is being multiplied.
@@ -211,48 +211,130 @@ fn set_item_body(item: &mut EnvelopeItem, body: Vec<u8>) {
     item.body = Bytes::from(body);
 }
 
-/// Multiply the `trace.sample_rate` envelope header by the rate that mirror
-/// sampling used, so that the header reflects the rate data arrived at.
+/// Attribute that records the rate the mirror sampled at.
+const MIRROR_RATE_ATTRIBUTE: &str = "mirror.sample_rate";
+
+/// Attribute that records the rate the SDK sampled at, before the mirror
+/// multiplied its own rate onto it.
+const CLIENT_RATE_ATTRIBUTE: &str = "mirror.client_sample_rate";
+
+/// Make a kept envelope report the rate its data was sampled at.
 ///
-/// This header is the one place Relay reads the client sample rate from.
-/// Transactions get it written into their trace context, and spans get it as
-/// the `sentry.client_sample_rate` attribute. The item bodies are not touched.
+/// `trace.sample_rate` in the envelope header is multiplied by `rate`. That
+/// header is the one place Relay reads the client sample rate from, so Sentry
+/// extrapolates mirrored data as if the SDK had sampled at the product.
 ///
-/// Sentry serializes this value as a string so that it survives a trip through
-/// the `baggage` header, but numbers are handled as well. The value is written
-/// back in the shape it was read in.
-fn scale_trace_sample_rate(header: &mut Value, factor: f64) {
-    // Nothing to do, and rewriting would reformat the value for no reason.
-    if factor >= 1.0 {
+/// The two factors of the product are also recorded on the items, so that
+/// mirror sampling can be told apart from SDK sampling when debugging.
+fn stamp_sample_rate(envelope: &mut Envelope, rate: f64) {
+    // Nothing to do, and rewriting would reformat the payload for no reason.
+    if rate >= 1.0 {
         return;
     }
-    let Some(trace) = header.get_mut("trace") else {
-        return;
-    };
-    let current = match trace.get("sample_rate") {
-        Some(Value::String(value)) => value.parse::<f64>().ok().map(|rate| (rate, true)),
-        Some(Value::Number(value)) => value.as_f64().map(|rate| (rate, false)),
-        Some(other) => {
+    let client_rate = trace_sample_rate(&envelope.header);
+    scale_trace_sample_rate(&mut envelope.header, rate);
+    for item in envelope.items.iter_mut() {
+        record_sample_rates(item, rate, client_rate);
+    }
+}
+
+/// The client sample rate from the dynamic sampling context of an envelope
+/// header.
+///
+/// Sentry serializes this value as a string so that it survives a trip through
+/// the `baggage` header, but numbers are handled as well.
+fn trace_sample_rate(header: &Value) -> Option<f64> {
+    match header.get("trace")?.get("sample_rate")? {
+        Value::String(value) => value.parse().ok(),
+        Value::Number(value) => value.as_f64(),
+        other => {
             warn!("Unexpected trace.sample_rate value {other:?}");
             None
         }
-        None => None,
-    };
-    // Envelopes without a sample rate are left alone. Adding one would claim a
-    // client side sample rate that was never used.
-    let Some((current, was_string)) = current else {
+    }
+}
+
+/// Multiply the `trace.sample_rate` envelope header by `factor`.
+///
+/// The value is written back in the shape it was read in. Envelopes without
+/// a sample rate are left alone, since adding one would claim a client side
+/// sample rate that was never used.
+fn scale_trace_sample_rate(header: &mut Value, factor: f64) {
+    let Some(current) = trace_sample_rate(header) else {
         return;
     };
-
     let updated = (current * factor).clamp(0.0, 1.0);
-    trace["sample_rate"] = if was_string {
-        Value::String(format!("{updated}"))
-    } else {
-        match serde_json::Number::from_f64(updated) {
+    let slot = &mut header["trace"]["sample_rate"];
+    *slot = match slot {
+        Value::String(_) => Value::String(format!("{updated}")),
+        _ => match serde_json::Number::from_f64(updated) {
             Some(number) => Value::Number(number),
             None => return,
-        }
+        },
     };
+}
+
+/// Record the mirror rate and the client rate on an item, for debugging.
+///
+/// Spans get both as attributes. Transactions get both in the data of their
+/// trace context, which Relay turns into attributes of the segment span.
+/// Other item types have no place for attributes and are left alone.
+fn record_sample_rates(item: &mut EnvelopeItem, mirror_rate: f64, client_rate: Option<f64>) {
+    let item_type = item_type(item);
+    if item_type != "span" && item_type != "transaction" {
+        return;
+    }
+    let Ok(mut body) = serde_json::from_slice::<Value>(&item.body) else {
+        return;
+    };
+    let rates: Vec<(&str, f64)> = [
+        (MIRROR_RATE_ATTRIBUTE, Some(mirror_rate)),
+        (CLIENT_RATE_ATTRIBUTE, client_rate),
+    ]
+    .into_iter()
+    .filter_map(|(key, rate)| Some((key, rate?)))
+    .collect();
+
+    if item_type == "span" {
+        let Some(spans) = body.get_mut("items").and_then(Value::as_array_mut) else {
+            return;
+        };
+        for span in spans {
+            let Some(attributes) = object_at(span, "attributes") else {
+                continue;
+            };
+            for (key, rate) in &rates {
+                attributes.insert(
+                    key.to_string(),
+                    serde_json::json!({"type": "double", "value": rate}),
+                );
+            }
+        }
+    } else {
+        let Some(data) = body
+            .pointer_mut("/contexts/trace")
+            .and_then(|trace| object_at(trace, "data"))
+        else {
+            return;
+        };
+        for (key, rate) in &rates {
+            data.insert(key.to_string(), serde_json::json!(rate));
+        }
+    }
+
+    set_item_body(item, serde_json::to_vec(&body).unwrap());
+}
+
+/// The object stored under `key` in `parent`, created when missing.
+fn object_at<'a>(
+    parent: &'a mut Value,
+    key: &str,
+) -> Option<&'a mut serde_json::Map<String, Value>> {
+    parent
+        .as_object_mut()?
+        .entry(key)
+        .or_insert_with(|| Value::Object(serde_json::Map::new()))
+        .as_object_mut()
 }
 
 fn replace_public_key(target: &str, outbound: &dsn::Dsn) -> String {
@@ -1421,15 +1503,26 @@ mod tests {
     }
 
     #[test]
-    fn test_scale_trace_sample_rate_not_scaled_at_one() {
-        let mut header =
-            serde_json::json!({"trace": {"public_key": "abcdef", "sample_rate": "0.5"}});
-        scale_trace_sample_rate(&mut header, 1.0);
+    fn test_stamp_sample_rate_untouched_at_one() {
+        let span_body = "{\n  \"items\": [{\"span_id\": \"a\"}]\n}";
+        let body = string_list_to_bytes(vec![
+            r#"{"trace":{"public_key":"abcdef","sample_rate":"0.50"}}"#,
+            &format!(r#"{{"type":"span","length":{}}}"#, span_body.len()),
+            span_body,
+        ]);
+        let mut envelope = envelope::parse(&body).expect("body should parse");
+
+        stamp_sample_rate(&mut envelope, 1.0);
 
         assert_eq!(
-            header["trace"]["sample_rate"],
-            Value::String("0.5".to_string()),
-            "an unsampled rate should not reformat the value"
+            envelope.header["trace"]["sample_rate"],
+            Value::String("0.50".to_string()),
+            "an unsampled rate should not reformat the header"
+        );
+        assert_eq!(
+            envelope.items[0].body,
+            Bytes::from(span_body),
+            "an unsampled rate should not rewrite the body"
         );
     }
 
@@ -1468,10 +1561,102 @@ mod tests {
         );
     }
 
-    /// Relay derives the span client sample rate from the envelope header,
-    /// so span bodies are forwarded untouched.
     #[test]
-    fn test_update_envelope_leaves_span_bodies_alone() {
+    fn test_record_sample_rates_on_spans() {
+        let spans = serde_json::json!({"items": [
+            {"span_id": "a", "attributes": {"sentry.environment": {"type": "string", "value": "prod"}}},
+            {"span_id": "b"},
+        ]});
+        let body = serde_json::to_vec(&spans).unwrap();
+        let mut item = EnvelopeItem {
+            header: serde_json::json!({"type": "span", "item_count": 2, "length": body.len()}),
+            body: Bytes::from(body),
+        };
+
+        record_sample_rates(&mut item, 0.5, Some(0.25));
+
+        let updated: Value = serde_json::from_slice(&item.body).unwrap();
+        for span in updated["items"].as_array().unwrap() {
+            assert_eq!(
+                span["attributes"]["mirror.sample_rate"],
+                serde_json::json!({"type": "double", "value": 0.5}),
+                "{span}"
+            );
+            assert_eq!(
+                span["attributes"]["mirror.client_sample_rate"],
+                serde_json::json!({"type": "double", "value": 0.25}),
+                "{span}"
+            );
+        }
+        assert_eq!(
+            updated["items"][0]["attributes"]["sentry.environment"]["value"], "prod",
+            "existing attributes are kept"
+        );
+        assert_eq!(
+            item.header["length"],
+            Value::from(item.body.len()),
+            "the length header must match the rewritten body"
+        );
+    }
+
+    #[test]
+    fn test_record_sample_rates_on_transactions() {
+        let transaction = serde_json::json!({
+            "event_id": "abc",
+            "contexts": {"trace": {"trace_id": "771a43a4192642f0b136d5159a501700", "op": "http.server"}},
+        });
+        let mut item = EnvelopeItem {
+            header: serde_json::json!({"type": "transaction"}),
+            body: Bytes::from(serde_json::to_vec(&transaction).unwrap()),
+        };
+
+        record_sample_rates(&mut item, 0.5, Some(1.0));
+
+        let updated: Value = serde_json::from_slice(&item.body).unwrap();
+        assert_eq!(
+            updated["contexts"]["trace"]["data"],
+            serde_json::json!({"mirror.sample_rate": 0.5, "mirror.client_sample_rate": 1.0})
+        );
+        assert_eq!(updated["contexts"]["trace"]["op"], "http.server");
+        assert!(
+            item.header.get("length").is_none(),
+            "a length header should not be invented"
+        );
+    }
+
+    /// An SDK that did not report a rate has no client rate to record.
+    #[test]
+    fn test_record_sample_rates_without_client_rate() {
+        let spans = serde_json::json!({"items": [{"span_id": "a"}]});
+        let mut item = EnvelopeItem {
+            header: serde_json::json!({"type": "span"}),
+            body: Bytes::from(serde_json::to_vec(&spans).unwrap()),
+        };
+
+        record_sample_rates(&mut item, 0.5, None);
+
+        let updated: Value = serde_json::from_slice(&item.body).unwrap();
+        assert_eq!(
+            updated["items"][0]["attributes"],
+            serde_json::json!({"mirror.sample_rate": {"type": "double", "value": 0.5}})
+        );
+    }
+
+    #[test]
+    fn test_record_sample_rates_leaves_other_items_alone() {
+        let body = Bytes::from_static(b"{\"message\": \"hello\"}");
+        let mut item = EnvelopeItem {
+            header: serde_json::json!({"type": "event", "length": body.len()}),
+            body: body.clone(),
+        };
+
+        record_sample_rates(&mut item, 0.5, Some(1.0));
+
+        assert_eq!(item.body, body);
+    }
+
+    #[test]
+    fn test_update_envelope_records_rates_on_spans() {
         let span_body =
             r#"{"items":[{"trace_id":"771a43a4192642f0b136d5159a501700","attributes":{}}]}"#;
         let body = string_list_to_bytes(vec![
@@ -1481,7 +1666,7 @@ mod tests {
         ]);
         let envelope = envelope::parse(&body).expect("body should parse");
 
-        // This trace draws 0.0845 in Relay's generator, so 0.5 keeps it.
+        // This trace draws 0.258, so 0.5 keeps it.
         let updated = update_envelope(envelope, &sampled_entry(uniform_rates(0.5)), false)
             .expect("the trace should be kept at 0.5");
 
@@ -1489,7 +1674,15 @@ mod tests {
             updated.header["trace"]["sample_rate"],
             Value::String("0.5".to_string())
         );
-        assert_eq!(updated.items[0].body, Bytes::from(span_body));
+        let spans: Value = serde_json::from_slice(&updated.items[0].body).unwrap();
+        assert_eq!(
+            spans["items"][0]["attributes"]["mirror.sample_rate"]["value"],
+            serde_json::json!(0.5)
+        );
+        assert_eq!(
+            spans["items"][0]["attributes"]["mirror.client_sample_rate"]["value"],
+            serde_json::json!(1.0)
+        );
     }
 
     /// Every envelope that survives sampling should carry the scaled rate.

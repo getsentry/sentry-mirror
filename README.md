@@ -83,17 +83,22 @@ from that id, so every envelope of a trace is kept or dropped together. SDKs
 that stream spans send one trace as many envelopes, and this keeps those traces
 whole. Envelopes without a trace id are sampled at random.
 
-The mirror draws the number for a trace the same way Relay does. The mirror
-keeps exactly the traces a Relay rule at the same rate would keep, and a Relay
-rule downstream at a higher rate keeps everything the mirror sends. The two
-decisions nest, so the combined rate is the lower of the two, not their product.
+The mirror draws its number for a trace independently of Relay. A sampling
+rule in the receiving project keeps its own share of the traces the mirror
+sends, so the combined rate is the product of the two rates.
 
 The mirror multiplies `trace.sample_rate` in the envelope header by its own
 rate. Relay reads the client sample rate from that header for transactions and
 spans alike, so Sentry extrapolates mirrored data as if the SDK had sampled at
-the combined rate. This is exact when the receiving project does not also sample on
-the server. A server rule below 1.0 overlaps with the mirror decision, and
-Sentry counts its rate a second time.
+the product. Server side sampling in the receiving project stacks on top of
+that, the same way it does for unmirrored data.
+
+For debugging, both factors of the product are recorded on the data itself.
+Spans get the `mirror.sample_rate` and `mirror.client_sample_rate` attributes,
+and transactions get the same keys in the `data` of their trace context.
+`mirror.sample_rate` is the rate the mirror sampled at, and
+`mirror.client_sample_rate` is the rate the SDK reported before the mirror
+changed it.
 
 :warning: Combining `multiplier` and `sample_rate` is a configuration error.
 The mirror logs an error during startup and ignores the `multiplier` value.
@@ -106,7 +111,8 @@ When events are mirrored to outbound DSNs the following modifications may be mad
 2. `dsn` in envelope headers will be replaced.
 3. `trace.public_key` in envelope headers will be replaced.
 4. `trace.sample_rate` in envelope headers is multiplied by `sample_rate` when it is defined on the DSN configuration.
-5. Content-Length, Content-Encoding, Host, X-Forwarded-For headers will be removed.
+5. `mirror.sample_rate` and `mirror.client_sample_rate` are added to span attributes and to the transaction trace context when `sample_rate` is below 1.0.
+6. Content-Length, Content-Encoding, Host, X-Forwarded-For headers will be removed.
 
 sentry-mirror will send outbound requests concurrently and respond with the response 
 body of the first outbound key.

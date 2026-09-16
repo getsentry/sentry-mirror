@@ -540,11 +540,12 @@ def test_mirror_samples_envelopes(sampling_mirror_process, stub_servers):
 
 def test_mirror_samples_whole_traces(sampling_trace_mirror_process, stub_servers):
     """
-    Test that sampling keeps traces whole and rewrites trace.sample_rate.
+    Test that sampling keeps traces whole and records the rates it used.
 
     server_one samples at 0.5. Each trace is sent twice, and both envelopes of
     a trace must get the same decision. The envelopes it does receive should
-    report 1.0 * 0.5. server_two is unsampled and keeps the original rate.
+    report 1.0 * 0.5 in the header, and both factors in the trace context.
+    server_two is unsampled and keeps the original payload.
     """
     fixture_path = Path(__file__).parent / "fixtures" / "transaction-dsc.txt"
     fixture_trace_id = "6cf173d587eb48568a9b2e12dcfbea52"
@@ -576,14 +577,20 @@ def test_mirror_samples_whole_traces(sampling_trace_mirror_process, stub_servers
         f"Server 2 should receive every envelope, got {len(server2_requests)}"
 
     for request in server1_requests:
-        header, _, _ = parse_envelope(request["body"])
+        header, _, payload = parse_envelope(request["body"])
         assert header["trace"]["sample_rate"] == "0.5", \
             f"Sampled envelopes should report the mirrored rate, got {header['trace']['sample_rate']}"
+        assert payload["contexts"]["trace"]["data"] == {
+            "mirror.sample_rate": 0.5,
+            "mirror.client_sample_rate": 1.0,
+        }, f"Sampled transactions should record both rates, got {payload['contexts']['trace']}"
 
     for request in server2_requests:
-        header, _, _ = parse_envelope(request["body"])
+        header, _, payload = parse_envelope(request["body"])
         assert header["trace"]["sample_rate"] == "1.0", \
             "Unsampled envelopes should keep the original rate"
+        assert "data" not in payload["contexts"]["trace"], \
+            "Unsampled transactions should not record rates"
 
 
 def parse_envelope(envelope_body: str) -> tuple[dict, dict, dict]:

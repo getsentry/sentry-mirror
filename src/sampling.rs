@@ -116,11 +116,10 @@ fn clamp_rate(category: Option<&str>, rate: f64, problems: &mut Vec<String>) -> 
 /// over many envelopes, and per-envelope randomness would leave partial
 /// traces behind. Without a trace id the decision is random.
 ///
-/// The function is the same one Relay uses for trace sampling, so the mirror
-/// and a downstream Relay agree on which traces to keep. A trace the mirror
-/// keeps at `rate` is exactly a trace Relay would keep at `rate`, and a Relay
-/// rule at a higher rate keeps everything the mirror sends. The two decisions
-/// nest, so the combined rate is the lower of the two, not their product.
+/// The decision is independent of the one Relay makes for the same trace.
+/// A Relay rule downstream keeps its own share of the traces the mirror
+/// sends, so the combined rate is the product of the two rates, and the
+/// server sample rate Relay records stays truthful.
 pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
     if rate >= 1.0 {
         return true;
@@ -137,13 +136,19 @@ pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
     draw < rate
 }
 
-/// Map a trace id onto `[0, 1)` the way Relay does.
+/// Mixed into the trace id before it seeds the generator.
 ///
-/// Relay seeds a PCG32 generator with the two halves of the id and takes the
-/// first `f64` it produces. Any change here changes which traces the mirror
-/// keeps, and breaks the agreement with Relay.
+/// Relay seeds the same generator with the bare id. With the same seed the
+/// mirror would keep exactly the traces Relay keeps, and a Relay rule below
+/// 1.0 would count its rate a second time on data the mirror already sampled.
+const MIRROR_SEED_SALT: u128 = 0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c834;
+
+/// Map a trace id onto `[0, 1)`.
+///
+/// The salted id seeds a PCG32 generator, and the first `f64` it produces is
+/// the draw. Any change here changes which traces every mirror keeps.
 fn uniform_from_trace_id(trace_id: Uuid) -> f64 {
-    let seed = trace_id.as_u128();
+    let seed = trace_id.as_u128() ^ MIRROR_SEED_SALT;
     let mut generator = Pcg32::new((seed >> 64) as u64, seed as u64);
     generator.sample(StandardUniform)
 }
@@ -152,7 +157,8 @@ fn uniform_from_trace_id(trace_id: Uuid) -> f64 {
 mod tests {
     use super::*;
 
-    const PINNED_DRAW: f64 = 0.084458025231689;
+    const PINNED_DRAW: f64 = 0.2580455816534687;
+    const RELAY_DRAW: f64 = 0.084458025231689;
 
     fn per_category(rates: &[(&str, f64)]) -> SampleRateConfig {
         SampleRateConfig::PerCategory(
@@ -298,12 +304,42 @@ mod tests {
         assert!((2200..2800).contains(&kept), "kept {kept} of 10000 at 0.25");
     }
 
-    /// Pin the mapping to the value Relay computes. A change here changes
-    /// which traces every mirror keeps and breaks the agreement with Relay.
+    /// Pin the mapping. A change here changes which traces every mirror
+    /// keeps, and running mirrors would start keeping different traces.
     #[test]
-    fn test_uniform_from_trace_id_matches_relay() {
+    fn test_uniform_from_trace_id_pinned() {
         let trace_id = Uuid::parse_str("771a43a4192642f0b136d5159a501700").unwrap();
         assert_eq!(uniform_from_trace_id(trace_id), PINNED_DRAW);
+    }
+
+    /// The draw Relay makes for a trace, for comparison with the mirror's.
+    fn relay_uniform_from_trace_id(trace_id: Uuid) -> f64 {
+        let seed = trace_id.as_u128();
+        let mut generator = Pcg32::new((seed >> 64) as u64, seed as u64);
+        generator.sample(StandardUniform)
+    }
+
+    /// A Relay rule downstream must keep its own share of what the mirror
+    /// sends, so the mirror's decision must not follow Relay's.
+    #[test]
+    fn test_keep_is_independent_of_relay() {
+        let pinned = Uuid::parse_str("771a43a4192642f0b136d5159a501700").unwrap();
+        assert_eq!(
+            relay_uniform_from_trace_id(pinned),
+            RELAY_DRAW,
+            "the reference must match what Relay computes"
+        );
+
+        let kept_by_both = (0..10_000)
+            .map(|i| Uuid::parse_str(&format!("{i:032x}")).unwrap())
+            .filter(|trace_id| relay_uniform_from_trace_id(*trace_id) < 0.5)
+            .filter(|trace_id| keep(0.5, Some(&trace_id.simple().to_string())))
+            .count();
+
+        assert!(
+            (2200..2800).contains(&kept_by_both),
+            "both kept {kept_by_both} of 10000, expected about a quarter"
+        );
     }
 
     /// SDKs send trace ids as 32 hex characters; Relay accepts the
