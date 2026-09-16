@@ -81,6 +81,7 @@ pub fn make_outbound_request(
 /// Will do the following:
 ///
 /// - Replace the DSN key in the envelope header with the outbound DSN.
+/// - Replace the trace's public key only when it belongs to the inbound project.
 /// - Will filter envelope items based on the entry's categories.
 /// - Can replace event ids in event headers which is necessary when mirror
 ///   is multiplying requests. Each copy needs a different eventid to preserve
@@ -89,6 +90,7 @@ pub fn make_outbound_request(
 /// See the envelope specs https://develop.sentry.dev/sdk/envelopes/
 pub fn update_envelope(
     mut envelope: Envelope,
+    inbound_key: &str,
     outbound: &dsn::OutboundEntry,
     replace_item_id: bool,
 ) -> Option<Envelope> {
@@ -106,7 +108,7 @@ pub fn update_envelope(
         envelope.header["dsn"] = Value::String(outbound_dsn.to_string());
     }
     if let Some(trace) = envelope.header.get("trace")
-        && trace.get("public_key").is_some()
+        && trace.get("public_key").and_then(Value::as_str) == Some(inbound_key)
     {
         envelope.header["trace"]["public_key"] = Value::String(outbound_dsn.public_key.clone());
     }
@@ -616,7 +618,7 @@ mod tests {
         body.extend_from_slice(b"{}\n");
         body.extend_from_slice(b"{}\n");
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
 
         assert!(result.is_some());
         let envelope = result.unwrap();
@@ -630,7 +632,7 @@ mod tests {
         let lines = vec![r#"{"key":"value"}"#, r#"{"second":"line"}"#, r#"{}"#];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
 
         assert!(result.is_some());
         let updated = result.expect("should be some");
@@ -651,7 +653,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, false);
+        let result = update_envelope(envelope, "abcdef", &outbound, false);
 
         assert!(result.is_some());
         let updated = result.expect("should be updated");
@@ -675,7 +677,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("should parse");
-        let result = update_envelope(envelope, &outbound, false);
+        let result = update_envelope(envelope, "abcdef", &outbound, false);
 
         assert!(result.is_some());
 
@@ -701,7 +703,7 @@ mod tests {
         ];
         let body = string_list_to_bytes(lines);
         let envelope = envelope::parse(&body).expect("should parse");
-        let result = update_envelope(envelope, &outbound, false);
+        let result = update_envelope(envelope, "abcdef", &outbound, false);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -712,6 +714,53 @@ mod tests {
         ];
         let expected = string_list_to_bytes(expected_lines);
         assert_eq!(updated.to_bytes().trim_ascii(), expected);
+    }
+
+    #[test]
+    fn test_update_envelope_span_trace_public_key() {
+        let outbound = test_entry();
+        for (root_key, expected_key) in [
+            ("abcdef", "outbound"),
+            (
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            ),
+        ] {
+            // Python's streamed span envelopes omit the optional DSN header.
+            for include_dsn in [false, true] {
+                let mut header = serde_json::json!({
+                    "trace": {
+                        "trace_id": "11111111111111111111111111111111",
+                        "public_key": root_key,
+                        "environment": "cloudflare",
+                        "sample_rate": "1.0",
+                        "sampled": "true",
+                    },
+                });
+                if include_dsn {
+                    header["dsn"] = "http://abcdef@localhost:3000/12345".into();
+                }
+                let header_line = header.to_string();
+                let body = string_list_to_bytes(vec![
+                    &header_line,
+                    r#"{"type":"span","content_type":"application/vnd.sentry.items.span.v2+json","item_count":1}"#,
+                    r#"{"version":2,"items":[{"trace_id":"11111111111111111111111111111111","span_id":"2222222222222222","parent_span_id":"3333333333333333","is_segment":true,"name":"GET /api/0/example/","start_timestamp":1700000000.0,"end_timestamp":1700000000.1}]}"#,
+                ]);
+                let envelope = envelope::parse(&body).expect("should parse");
+                let original_item = envelope.items[0].clone();
+
+                let updated = update_envelope(envelope, "abcdef", &outbound, false).unwrap();
+
+                header["trace"]["public_key"] = expected_key.into();
+                if include_dsn {
+                    header["dsn"] = outbound.dsn.to_string().into();
+                }
+                assert_eq!(updated.header, header);
+                assert_eq!(updated.items.len(), 1);
+                assert_eq!(updated.items[0].header, original_item.header);
+                assert_eq!(updated.items[0].body, original_item.body);
+            }
+        }
     }
 
     #[test]
@@ -857,7 +906,7 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, false);
+        let result = update_envelope(envelope, "abcdef", &outbound, false);
 
         assert!(result.is_some(), "Should return Some for valid input");
         let updated = result.unwrap();
@@ -888,7 +937,7 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, false);
+        let result = update_envelope(envelope, "abcdef", &outbound, false);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -913,7 +962,7 @@ mod tests {
         body.extend_from_slice(b"test");
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, false);
+        let result = update_envelope(envelope, "abcdef", &outbound, false);
         assert!(
             result.is_none(),
             "all items filtered, envelope is not needed"
@@ -930,7 +979,7 @@ mod tests {
         body.extend_from_slice(b"{\"event_id\":\"oldeventid\",\"other\":\"value\"}");
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -956,7 +1005,7 @@ mod tests {
         body.extend_from_slice(b"{\"event_id\":\"old-event-id\",\"other\":\"value\"}");
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -995,7 +1044,7 @@ mod tests {
         body.push(b'\n');
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, false);
+        let result = update_envelope(envelope, "abcdef", &outbound, false);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1020,7 +1069,7 @@ mod tests {
         body.extend_from_slice(b"{\"event_id\":\"replace\", \"contexts\":{\"feedback\":{}}}");
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1061,7 +1110,7 @@ mod tests {
         body.push(b'\n');
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1090,7 +1139,7 @@ mod tests {
         body.push(b'\n');
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1121,7 +1170,7 @@ mod tests {
         body.push(b'\n');
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
         assert!(result.is_some());
 
         let updated = result.unwrap();
@@ -1152,7 +1201,7 @@ mod tests {
         body.extend_from_slice(b"{\"event_id\":\"original-id\",\"message\":\"test\"}\n");
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
         assert!(result.is_some());
         let updated = result.unwrap();
         assert_eq!(updated.items.len(), 2);
@@ -1188,7 +1237,7 @@ mod tests {
         body.push(b'\n');
 
         let envelope = envelope::parse(&body).expect("body should parse");
-        let result = update_envelope(envelope, &outbound, true);
+        let result = update_envelope(envelope, "abcdef", &outbound, true);
 
         assert!(result.is_some());
         let updated = result.unwrap();
@@ -1239,6 +1288,7 @@ mod tests {
     fn test_update_envelope_sample_rate_zero_drops() {
         let result = update_envelope(
             sampling_envelope("error"),
+            "abcdef",
             &sampled_entry(category_rates(&[("error", 0.0)])),
             false,
         );
@@ -1250,6 +1300,7 @@ mod tests {
     fn test_update_envelope_sample_rate_one_keeps() {
         let result = update_envelope(
             sampling_envelope("error"),
+            "abcdef",
             &sampled_entry(category_rates(&[("error", 1.0)])),
             false,
         );
@@ -1261,6 +1312,7 @@ mod tests {
     fn test_update_envelope_sample_rate_unlisted_category_kept() {
         let result = update_envelope(
             sampling_envelope("error"),
+            "abcdef",
             &sampled_entry(category_rates(&[("span", 0.0)])),
             false,
         );
@@ -1275,6 +1327,7 @@ mod tests {
     fn test_update_envelope_sample_rate_uniform_zero_drops() {
         let result = update_envelope(
             sampling_envelope("transaction"),
+            "abcdef",
             &sampled_entry(uniform_rates(0.0)),
             false,
         );
@@ -1298,6 +1351,7 @@ mod tests {
         let envelope = envelope::parse(&body).expect("body should parse");
         let result = update_envelope(
             envelope,
+            "abcdef",
             &sampled_entry(category_rates(&[("attachment", 0.0)])),
             false,
         );
@@ -1310,6 +1364,7 @@ mod tests {
         let envelope = envelope::parse(&body).expect("body should parse");
         let result = update_envelope(
             envelope,
+            "abcdef",
             &sampled_entry(category_rates(&[("event", 0.0)])),
             false,
         );
@@ -1334,7 +1389,7 @@ mod tests {
             categories: vec!["event".to_string()],
             ..sampled_entry(category_rates(&[("attachment", 0.0)]))
         };
-        let result = update_envelope(envelope, &outbound, false);
+        let result = update_envelope(envelope, "abcdef", &outbound, false);
 
         assert!(
             result.is_some(),
@@ -1430,7 +1485,7 @@ mod tests {
         let mut kept = 0;
         for _ in 0..50 {
             let envelope = envelope::parse(&body).expect("body should parse");
-            let Some(updated) = update_envelope(envelope, &outbound, false) else {
+            let Some(updated) = update_envelope(envelope, "abcdef", &outbound, false) else {
                 continue;
             };
             kept += 1;
@@ -1449,7 +1504,7 @@ mod tests {
         let outbound = sampled_entry(uniform_rates(0.5));
         let mut kept = 0;
         for _ in 0..200 {
-            let result = update_envelope(sampling_envelope("error"), &outbound, false);
+            let result = update_envelope(sampling_envelope("error"), "abcdef", &outbound, false);
             if result.is_some() {
                 kept += 1;
             }
