@@ -489,14 +489,20 @@ def test_mirror_multiplies_envelopes(multiplier_mirror_process, stub_servers):
     # Normalize event_ids and compare parsed structures
     normalized_server1 = normalize_event_ids((server1_header, server1_item_header, server1_payload))
 
-    for i, parsed in enumerate(server2_parsed):
+    # The rewritten payload is serialized again, so its length differs from
+    # the fixture. The length header must follow the payload it describes.
+    server1_item_header = without_length(normalized_server1[1])
+    for i, (parsed, request) in enumerate(zip(server2_parsed, server2_requests)):
         normalized_server2 = normalize_event_ids(parsed)
 
         # Compare each component
         assert normalized_server2[0] == normalized_server1[0], \
             f"Server2 request {i} header should match server1 after normalization"
-        assert normalized_server2[1] == normalized_server1[1], \
+        assert without_length(normalized_server2[1]) == server1_item_header, \
             f"Server2 request {i} item header should match server1"
+        raw_payload = request["body"].strip().split("\n", 2)[2]
+        assert normalized_server2[1]["length"] == len(raw_payload.encode()), \
+            f"Server2 request {i} length header should match the rewritten payload"
         assert normalized_server2[2] == normalized_server1[2], \
             f"Server2 request {i} payload should match server1 after event_id normalization"
 
@@ -534,11 +540,12 @@ def test_mirror_samples_envelopes(sampling_mirror_process, stub_servers):
 
 def test_mirror_samples_whole_traces(sampling_trace_mirror_process, stub_servers):
     """
-    Test that sampling keeps traces whole and recalculates trace.sample_rate.
+    Test that sampling keeps traces whole and records the rates it used.
 
     server_one samples at 0.5. Each trace is sent twice, and both envelopes of
     a trace must get the same decision. The envelopes it does receive should
-    report 1.0 * 0.5. server_two is unsampled and keeps the original rate.
+    report 1.0 * 0.5 in the header, and both factors in the trace context.
+    server_two is unsampled and keeps the original payload.
     """
     fixture_path = Path(__file__).parent / "fixtures" / "transaction-dsc.txt"
     fixture_trace_id = "6cf173d587eb48568a9b2e12dcfbea52"
@@ -570,14 +577,20 @@ def test_mirror_samples_whole_traces(sampling_trace_mirror_process, stub_servers
         f"Server 2 should receive every envelope, got {len(server2_requests)}"
 
     for request in server1_requests:
-        header, _, _ = parse_envelope(request["body"])
+        header, _, payload = parse_envelope(request["body"])
         assert header["trace"]["sample_rate"] == "0.5", \
             f"Sampled envelopes should report the mirrored rate, got {header['trace']['sample_rate']}"
+        assert payload["contexts"]["trace"]["data"] == {
+            "mirror.sample_rate": 0.5,
+            "mirror.client_sample_rate": 1.0,
+        }, f"Sampled transactions should record both rates, got {payload['contexts']['trace']}"
 
     for request in server2_requests:
-        header, _, _ = parse_envelope(request["body"])
+        header, _, payload = parse_envelope(request["body"])
         assert header["trace"]["sample_rate"] == "1.0", \
             "Unsampled envelopes should keep the original rate"
+        assert "data" not in payload["contexts"]["trace"], \
+            "Unsampled transactions should not record rates"
 
 
 def parse_envelope(envelope_body: str) -> tuple[dict, dict, dict]:
@@ -587,6 +600,10 @@ def parse_envelope(envelope_body: str) -> tuple[dict, dict, dict]:
     item_header = json.loads(lines[1])
     payload = json.loads(lines[2]) if len(lines) > 2 else {}
     return header, item_header, payload
+
+
+def without_length(item_header: dict) -> dict:
+    return {key: value for key, value in item_header.items() if key != "length"}
 
 
 def normalize_event_ids(parsed_envelope: tuple[dict, dict, dict]) -> tuple[dict, dict, dict]:
