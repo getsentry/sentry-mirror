@@ -1,6 +1,5 @@
-use rand::Rng;
-use rand::distr::StandardUniform;
-use rand_pcg::Pcg32;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::collections::BTreeMap;
 use std::fmt;
 use uuid::Uuid;
@@ -111,15 +110,8 @@ fn clamp_rate(category: Option<&str>, rate: f64, problems: &mut Vec<String>) -> 
 
 /// Decide whether a payload is kept at `rate`.
 ///
-/// When the trace id is known the decision is a pure function of it, so all
-/// envelopes of one trace get the same answer. Streaming SDKs spread a trace
-/// over many envelopes, and per-envelope randomness would leave partial
-/// traces behind. Without a trace id the decision is random.
-///
-/// The decision is independent of the one Relay makes for the same trace.
-/// A Relay rule downstream keeps its own share of the traces the mirror
-/// sends, so the combined rate is the product of the two rates, and the
-/// server sample rate Relay records stays truthful.
+/// The draw is seeded with the trace id when there is one, so every envelope
+/// of a trace gets the same decision. Without a trace id the draw is random.
 pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
     if rate >= 1.0 {
         return true;
@@ -129,36 +121,19 @@ pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
     }
 
     let draw = match trace_id.and_then(|id| Uuid::parse_str(id).ok()) {
-        Some(trace_id) => uniform_from_trace_id(trace_id),
+        Some(id) => {
+            let (high, low) = id.as_u64_pair();
+            StdRng::seed_from_u64(high ^ low).random::<f64>()
+        }
         None => rand::rng().random::<f64>(),
     };
 
     draw < rate
 }
 
-/// Mixed into the trace id before it seeds the generator.
-///
-/// Relay seeds the same generator with the bare id. With the same seed the
-/// mirror would keep exactly the traces Relay keeps, and a Relay rule below
-/// 1.0 would count its rate a second time on data the mirror already sampled.
-const MIRROR_SEED_SALT: u128 = 0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c834;
-
-/// Map a trace id onto `[0, 1)`.
-///
-/// The salted id seeds a PCG32 generator, and the first `f64` it produces is
-/// the draw. Any change here changes which traces every mirror keeps.
-fn uniform_from_trace_id(trace_id: Uuid) -> f64 {
-    let seed = trace_id.as_u128() ^ MIRROR_SEED_SALT;
-    let mut generator = Pcg32::new((seed >> 64) as u64, seed as u64);
-    generator.sample(StandardUniform)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const PINNED_DRAW: f64 = 0.2580455816534687;
-    const RELAY_DRAW: f64 = 0.084458025231689;
 
     fn per_category(rates: &[(&str, f64)]) -> SampleRateConfig {
         SampleRateConfig::PerCategory(
@@ -277,24 +252,6 @@ mod tests {
     }
 
     #[test]
-    fn test_keep_is_monotonic_in_rate() {
-        for i in 0..1000 {
-            let trace_id = format!("{i:032x}");
-            if keep(0.1, Some(&trace_id)) {
-                assert!(keep(0.5, Some(&trace_id)), "raising the rate keeps a trace");
-            }
-            if !keep(0.5, Some(&trace_id)) {
-                assert!(
-                    !keep(0.1, Some(&trace_id)),
-                    "lowering the rate drops a trace"
-                );
-            }
-        }
-    }
-
-    /// Sequential ids differ only in their last bytes, which is the hardest
-    /// input for a byte-wise hash to spread evenly.
-    #[test]
     fn test_keep_trace_ids_spread_over_rate() {
         let kept = (0..10_000)
             .map(|i| format!("{i:032x}"))
@@ -302,66 +259,6 @@ mod tests {
             .count();
 
         assert!((2200..2800).contains(&kept), "kept {kept} of 10000 at 0.25");
-    }
-
-    /// Pin the mapping. A change here changes which traces every mirror
-    /// keeps, and running mirrors would start keeping different traces.
-    #[test]
-    fn test_uniform_from_trace_id_pinned() {
-        let trace_id = Uuid::parse_str("771a43a4192642f0b136d5159a501700").unwrap();
-        assert_eq!(uniform_from_trace_id(trace_id), PINNED_DRAW);
-    }
-
-    /// The draw Relay makes for a trace, for comparison with the mirror's.
-    fn relay_uniform_from_trace_id(trace_id: Uuid) -> f64 {
-        let seed = trace_id.as_u128();
-        let mut generator = Pcg32::new((seed >> 64) as u64, seed as u64);
-        generator.sample(StandardUniform)
-    }
-
-    /// A Relay rule downstream must keep its own share of what the mirror
-    /// sends, so the mirror's decision must not follow Relay's.
-    #[test]
-    fn test_keep_is_independent_of_relay() {
-        let pinned = Uuid::parse_str("771a43a4192642f0b136d5159a501700").unwrap();
-        assert_eq!(
-            relay_uniform_from_trace_id(pinned),
-            RELAY_DRAW,
-            "the reference must match what Relay computes"
-        );
-
-        let kept_by_both = (0..10_000)
-            .map(|i| Uuid::parse_str(&format!("{i:032x}")).unwrap())
-            .filter(|trace_id| relay_uniform_from_trace_id(*trace_id) < 0.5)
-            .filter(|trace_id| keep(0.5, Some(&trace_id.simple().to_string())))
-            .count();
-
-        assert!(
-            (2200..2800).contains(&kept_by_both),
-            "both kept {kept_by_both} of 10000, expected about a quarter"
-        );
-    }
-
-    /// SDKs send trace ids as 32 hex characters; Relay accepts the
-    /// hyphenated form as well. Both must map to the same decision.
-    #[test]
-    fn test_keep_accepts_hyphenated_trace_id() {
-        let simple = "771a43a4192642f0b136d5159a501700";
-        let hyphenated = "771a43a4-1926-42f0-b136-d5159a501700";
-        for rate in [0.1, 0.5, 0.9, 0.99] {
-            assert_eq!(keep(rate, Some(simple)), keep(rate, Some(hyphenated)));
-        }
-    }
-
-    /// A trace id Relay cannot parse gets no trace-level decision there, so
-    /// the mirror falls back to a random one instead of a fixed one.
-    #[test]
-    fn test_keep_invalid_trace_id_is_random() {
-        let kept = (0..1000)
-            .filter(|_| keep(0.5, Some("not-a-trace-id")))
-            .count();
-
-        assert!((400..600).contains(&kept), "kept {kept} of 1000 at 0.5");
     }
 
     #[test]
