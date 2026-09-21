@@ -323,6 +323,57 @@ def test_mirror_forwards_to_all_outbound_servers(
     assert len(server1_requests[0]['body']) > 0, "Request body should not be empty"
 
 
+@pytest.mark.parametrize("root_key,expected_keys", [
+    pytest.param(
+        "390bf7f953b7492c9007d2cf69078adf",
+        ("d2030950546a6177f9cdb0663b069aed", "e3141a61657b7288facec1774c17afbe"),
+        id="own-root",
+    ),
+    pytest.param(
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        ("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"),
+        id="upstream-root",
+    ),
+])
+def test_mirror_preserves_trace_root(
+    mirror_process: subprocess.Popen,
+    stub_servers: tuple[ServerMetadata, ServerMetadata],
+    tmp_path: Path,
+    root_key: str,
+    expected_keys: tuple[str, str],
+):
+    """Resolve the inbound key from HTTP auth and preserve trace roots across destinations."""
+    fixture_body = (Path(__file__).parent / "fixtures" / "spans.txt").read_text()
+    header, item_header, payload = parse_envelope(fixture_body)
+    header["trace"] = {
+        "trace_id": payload["items"][0]["trace_id"],
+        "public_key": root_key,
+        "sample_rate": "1.0",
+    }
+    # Streamed span envelopes can omit the DSN; the request auth identifies the sender.
+    fixture_path = tmp_path / "spans-with-trace.txt"
+    fixture_path.write_text(json.dumps(header) + "\n" + fixture_body.split("\n", 1)[1])
+
+    response = send_envelope_to_mirror(fixture_path)
+    assert response.status_code == 200, f"Mirror returned {response.status_code}"
+    time.sleep(1)
+
+    for server, expected_key in zip(stub_servers, expected_keys, strict=True):
+        forwarded_requests = read_logs(server["logfile"])
+        assert len(forwarded_requests) == 1
+        assert forwarded_requests[0]["url"] == "/api/789/envelope/"
+
+        forwarded_header, forwarded_item_header, forwarded_payload = parse_envelope(
+            forwarded_requests[0]["body"]
+        )
+        assert forwarded_header == {
+            **header,
+            "trace": {**header["trace"], "public_key": expected_key},
+        }
+        assert forwarded_item_header == item_header
+        assert forwarded_payload == payload
+
+
 def test_mirror_forwards_minidumps(
     mirror_process: subprocess.Popen,
     stub_servers: list[ServerMetadata]
