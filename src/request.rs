@@ -1494,10 +1494,10 @@ mod tests {
         for i in 0..200 {
             let trace_id = format!("{i:032x}");
             let first =
-                update_envelope(span_envelope(&trace_id), "deadbeef", &outbound, false).is_some();
+                update_envelope(span_envelope(&trace_id), "abcdef", &outbound, false).is_some();
             for _ in 0..5 {
-                let again = update_envelope(span_envelope(&trace_id), "deadbeef", &outbound, false)
-                    .is_some();
+                let again =
+                    update_envelope(span_envelope(&trace_id), "abcdef", &outbound, false).is_some();
                 assert_eq!(again, first, "trace {trace_id} got a different decision");
             }
             kept += usize::from(first);
@@ -1723,10 +1723,10 @@ mod tests {
         ]);
         let envelope = envelope::parse(&body).expect("body should parse");
 
-        // This trace draws 0.258, so 0.5 keeps it.
+        // This trace draws below 0.5, so it is kept.
         let updated = update_envelope(
             envelope,
-            "deadbeef",
+            "abcdef",
             &sampled_entry(uniform_rates(0.5)),
             false,
         )
