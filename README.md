@@ -78,6 +78,10 @@ dropped whole, so attachments are never separated from the event they belong to.
 Requests that are not envelopes, such as minidumps, use the rate that applies to
 all categories, and are not sampled when only per-category rates are configured.
 
+When the envelope header carries a `trace.trace_id`, the decision is derived
+from that id, so every envelope of a trace is kept or dropped together.
+Envelopes without a trace id are sampled at random.
+
 :warning: Combining `multiplier` and `sample_rate` is a configuration error.
 The mirror logs an error during startup and ignores the `multiplier` value.
 

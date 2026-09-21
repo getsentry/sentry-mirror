@@ -176,7 +176,7 @@ where
                 // use `unknown` as a placeholder category
                 if let Some(rates) = &outbound.sample_rate
                     && rates.is_active()
-                    && !sampling::roll(rates.rate_for("unknown"))
+                    && !sampling::keep(rates.rate_for("unknown"), None)
                 {
                     metrics::counter!(
                         "handle_proxy.outbound_request.sampled_out",

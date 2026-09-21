@@ -1,6 +1,8 @@
-use rand::Rng;
+use rand::rngs::StdRng;
+use rand::{Rng, SeedableRng};
 use std::collections::BTreeMap;
 use std::fmt;
+use uuid::Uuid;
 
 use crate::config::SampleRateConfig;
 
@@ -106,8 +108,11 @@ fn clamp_rate(category: Option<&str>, rate: f64, problems: &mut Vec<String>) -> 
     rate
 }
 
-/// Draw against the thread local rng to decide if an item is kept.
-pub fn roll(rate: f64) -> bool {
+/// Decide whether a payload is kept at `rate`.
+///
+/// The draw is seeded with the trace id when there is one, so every envelope
+/// of a trace gets the same decision. Without a trace id the draw is random.
+pub fn keep(rate: f64, trace_id: Option<&str>) -> bool {
     if rate >= 1.0 {
         return true;
     }
@@ -115,7 +120,15 @@ pub fn roll(rate: f64) -> bool {
         return false;
     }
 
-    rate > rand::rng().random::<f64>()
+    let draw = match trace_id.and_then(|id| Uuid::parse_str(id).ok()) {
+        Some(id) => {
+            let (high, low) = id.as_u64_pair();
+            StdRng::seed_from_u64(high ^ low).random::<f64>()
+        }
+        None => rand::rng().random::<f64>(),
+    };
+
+    draw < rate
 }
 
 #[cfg(test)]
@@ -219,11 +232,33 @@ mod tests {
     }
 
     #[test]
-    fn test_roll_deterministic_extremes() {
-        for _ in 0..100 {
-            assert!(roll(1.0));
-            assert!(!roll(0.0));
+    fn test_keep_extremes() {
+        for i in 0..100 {
+            let trace_id = format!("{i:032x}");
+            assert!(keep(1.0, None));
+            assert!(!keep(0.0, None));
+            assert!(keep(1.0, Some(&trace_id)));
+            assert!(!keep(0.0, Some(&trace_id)));
         }
+    }
+
+    #[test]
+    fn test_keep_same_trace_same_decision() {
+        let trace_id = "771a43a4192642f0b136d5159a501700";
+        let first = keep(0.5, Some(trace_id));
+        for _ in 0..100 {
+            assert_eq!(keep(0.5, Some(trace_id)), first);
+        }
+    }
+
+    #[test]
+    fn test_keep_trace_ids_spread_over_rate() {
+        let kept = (0..10_000)
+            .map(|i| format!("{i:032x}"))
+            .filter(|trace_id| keep(0.25, Some(trace_id)))
+            .count();
+
+        assert!((2200..2800).contains(&kept), "kept {kept} of 10000 at 0.25");
     }
 
     #[test]
