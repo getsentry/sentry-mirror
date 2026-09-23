@@ -191,12 +191,18 @@ where
                 body_bytes.clone()
             };
 
+            let body_bytes = new_body.len() as f64;
             let request = request_builder.body(Full::new(new_body));
             metrics::histogram!(
                 "handle_proxy.build_request.duration",
                 "outbound_host" => outbound_host.clone()
             )
             .record(build_request_timer.elapsed());
+            metrics::histogram!(
+                "handle_proxy.outbound_request.body_bytes",
+                "outbound_host" => outbound_host.clone()
+            )
+            .record(body_bytes);
 
             if let Ok(outbound_request) = request {
                 debug!(
