@@ -201,7 +201,8 @@ where
             metrics::histogram!(
                 "handle_proxy.outbound_request.body_bytes",
                 "outbound_host" => outbound_host.clone()
-            ).record(body_bytes);
+            )
+            .record(body_bytes);
 
             if let Ok(outbound_request) = request {
                 debug!(
