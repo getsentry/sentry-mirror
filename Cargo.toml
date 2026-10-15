@@ -4,7 +4,7 @@ version = "0.0.1"
 edition = "2024"
 
 [profile.release]
-debug = 1
+debug = 0
 
 [dependencies]
 hyper = { version = "1.7.0", features = ["full"] }
