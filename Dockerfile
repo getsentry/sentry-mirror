@@ -12,7 +12,7 @@ FROM debian:trixie-slim
 RUN groupadd sentrymirror --gid 1000 && useradd --gid sentrymirror --uid 1000 sentrymirror
 
 RUN apt-get update && \
-  apt-get install -y openssl ca-certificates libssl-dev curl xz-utils
+  apt-get install -y openssl ca-certificates libssl-dev xz-utils
 
 EXPOSE 3000
 
